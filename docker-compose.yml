@@ -1,6 +1,6 @@
 services:
   myride-ha-bridge:
-    image: ghcr.io/${GITHUB_REPOSITORY:-myride-ha-bridge/myride-ha-bridge}:latest
+    image: ghcr.io/legrego/myride-ha-bridge:latest
     container_name: myride-ha-bridge
     restart: unless-stopped
 
