@@ -1,0 +1,42 @@
+services:
+  myride-ha-bridge:
+    image: ghcr.io/${GITHUB_REPOSITORY:-myride-ha-bridge/myride-ha-bridge}:latest
+    container_name: myride-ha-bridge
+    restart: unless-stopped
+
+    environment:
+      # ── MyRide Authentication ──────────────────────────────────────────────
+      MYRIDE_REFRESH_TOKEN: ${MYRIDE_REFRESH_TOKEN}
+      MYRIDE_TENANT_ID: ${MYRIDE_TENANT_ID}
+      # MYRIDE_ACCESS_TOKEN: ${MYRIDE_ACCESS_TOKEN}  # fallback if no refresh token
+
+      # ── MQTT Broker ────────────────────────────────────────────────────────
+      MQTT_BROKER: ${MQTT_BROKER:-homeassistant.local}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_PREFIX: ${MQTT_TOPIC_PREFIX:-myride}
+
+      # ── Options ────────────────────────────────────────────────────────────
+      BUS_FILTER: ${BUS_FILTER:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # ── API Server ─────────────────────────────────────────────────────────
+      API_PORT: ${API_PORT:-8099}
+      TOKEN_FILE: /data/refresh_token
+
+    ports:
+      - "${API_PORT:-8099}:${API_PORT:-8099}"
+
+    volumes:
+      - myride-data:/data
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${API_PORT:-8099}/status"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  myride-data:
