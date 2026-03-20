@@ -276,22 +276,46 @@
       margin: 0;
     }
 
+    .snippet-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
     #copy-snippet {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      padding: 4px 10px;
-      font-size: 0.72rem;
-      background: #3a3a3a;
-      border: 1px solid #555;
-      border-radius: 4px;
-      color: #ccc;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      background: var(--yellow);
+      border: 2px solid var(--yellow-dark);
+      border-radius: 6px;
+      color: var(--text);
       cursor: pointer;
-      font-weight: 600;
+      font-weight: 700;
+      align-self: flex-start;
     }
 
     #copy-snippet:hover {
-      background: #4a4a4a;
+      background: var(--yellow-dark);
+    }
+
+    #copy-snippet.copied {
+      background: #E8F5E9;
+      border-color: #81C784;
+      color: var(--green);
+    }
+
+    #copy-msg {
+      font-size: 0.8rem;
+      color: var(--green);
+      display: none;
+    }
+
+    #copy-msg.visible {
+      display: block;
+    }
+
+    #copy-msg.error {
+      color: var(--red);
     }
   </style>
 </head>
@@ -339,7 +363,10 @@
         </ol>
         <div class="snippet-wrap">
           <pre id="snippet-code">Loading…</pre>
-          <button id="copy-snippet" type="button">Copy</button>
+        </div>
+        <div class="snippet-actions">
+          <button id="copy-snippet" type="button">Copy to clipboard</button>
+          <span id="copy-msg"></span>
         </div>
       </div>
     </details>
@@ -431,11 +458,44 @@
 
     $('copy-snippet').addEventListener('click', () => {
       const code = $('snippet-code').textContent;
-      navigator.clipboard.writeText(code).then(() => {
-        const btn = $('copy-snippet');
+      const btn = $('copy-snippet');
+      const msg = $('copy-msg');
+
+      function showSuccess() {
         btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
-      });
+        btn.classList.add('copied');
+        msg.textContent = 'Snippet copied to clipboard.';
+        msg.className = 'visible';
+        setTimeout(() => {
+          btn.textContent = 'Copy to clipboard';
+          btn.classList.remove('copied');
+          msg.className = '';
+        }, 2500);
+      }
+
+      function showError() {
+        msg.textContent = 'Copy failed — please select and copy the text manually.';
+        msg.className = 'visible error';
+        setTimeout(() => { msg.className = ''; }, 4000);
+      }
+
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(code).then(showSuccess, showError);
+      } else {
+        // Fallback for non-secure contexts (plain HTTP)
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = code;
+          ta.style.cssText = 'position:fixed;opacity:0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          showSuccess();
+        } catch {
+          showError();
+        }
+      }
     });
   </script>
 </body>
