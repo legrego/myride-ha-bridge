@@ -210,6 +210,89 @@
     #sim-banner.visible {
       display: block;
     }
+
+    details.snippet-card > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 14px 20px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+
+    details.snippet-card > summary::-webkit-details-marker { display: none; }
+
+    details.snippet-card > summary::after {
+      content: "▶";
+      font-size: 0.65rem;
+      transition: transform 0.15s;
+    }
+
+    details.snippet-card[open] > summary::after {
+      transform: rotate(90deg);
+    }
+
+    .snippet-body {
+      padding: 0 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .snippet-body p {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .snippet-body ol {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.8;
+      padding-left: 20px;
+    }
+
+    .snippet-wrap {
+      position: relative;
+    }
+
+    pre#snippet-code {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 6px;
+      padding: 14px 14px 14px 14px;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      max-height: 280px;
+      white-space: pre;
+      margin: 0;
+    }
+
+    #copy-snippet {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      padding: 4px 10px;
+      font-size: 0.72rem;
+      background: #3a3a3a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #ccc;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #copy-snippet:hover {
+      background: #4a4a4a;
+    }
   </style>
 </head>
 
@@ -243,6 +326,23 @@
       </div>
       <div class="refresh-note" id="last-refresh">Fetching…</div>
     </div>
+
+    <details class="card snippet-card">
+      <summary>Token Capture Snippet</summary>
+      <div class="snippet-body">
+        <p>If your refresh token has expired, log in to <strong>myridek12.tylerapp.com</strong>, then run this snippet in the browser DevTools console to extract a new one.</p>
+        <ol>
+          <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
+          <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
+          <li>Paste the snippet below and press Enter</li>
+          <li>Copy the <code>MYRIDE_REFRESH_TOKEN</code> value and paste it above</li>
+        </ol>
+        <div class="snippet-wrap">
+          <pre id="snippet-code">Loading…</pre>
+          <button id="copy-snippet" type="button">Copy</button>
+        </div>
+      </div>
+    </details>
 
     <div class="card">
       <div class="card-title">Update Refresh Token</div>
@@ -314,6 +414,29 @@
 
     fetchStatus();
     setInterval(fetchStatus, 15000);
+
+    // Load snippet once when the details element is first opened
+    const snippetDetails = document.querySelector('details.snippet-card');
+    let snippetLoaded = false;
+    snippetDetails.addEventListener('toggle', async () => {
+      if (!snippetDetails.open || snippetLoaded) return;
+      snippetLoaded = true;
+      try {
+        const text = await fetch('/snippet').then(r => r.text());
+        $('snippet-code').textContent = text;
+      } catch {
+        $('snippet-code').textContent = 'Could not load snippet.';
+      }
+    });
+
+    $('copy-snippet').addEventListener('click', () => {
+      const code = $('snippet-code').textContent;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = $('copy-snippet');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      });
+    });
   </script>
 </body>
 
