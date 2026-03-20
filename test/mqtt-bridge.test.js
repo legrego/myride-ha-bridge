@@ -135,7 +135,6 @@ describe("MqttBridge", () => {
       });
 
       const topics = publishCalls.map((c) => c[0]);
-      // assert.ok(topics.includes("myride/bus_042/state"));
       assert.ok(topics.includes("myride/bus_042/attributes"));
       assert.ok(topics.includes("myride/bus_042/speed"));
       assert.ok(topics.includes("myride/bus_042/heading"));
