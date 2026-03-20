@@ -41,6 +41,7 @@ const { CognitoAuth } = require("./cognito-auth");
 const { MyRideSignalRClient } = require("./signalr-client");
 const { MqttBridge } = require("./mqtt-bridge");
 const { ApiServer } = require("./api-server");
+const { runSimulation } = require("./simulator");
 
 // ─── Configuration ───────────────────────────────────────────────
 const config = {
@@ -54,7 +55,7 @@ const config = {
     tenantId: process.env.MYRIDE_TENANT_ID || null,
   },
   mqtt: {
-    broker: process.env.MQTT_BROKER || "homeassistant.local",
+    broker: process.env.MQTT_BROKER || null,
     port: parseInt(process.env.MQTT_PORT || "1883"),
     username: process.env.MQTT_USERNAME,
     password: process.env.MQTT_PASSWORD,
@@ -80,6 +81,16 @@ const apiServer = new ApiServer({
 const fileToken = apiServer.loadTokenFromFile();
 if (fileToken) {
   config.myride.refreshToken = fileToken;
+}
+
+// ─── Simulation mode ─────────────────────────────────────────────
+if (process.env.SIMULATE === "true") {
+  runSimulation({
+    port: config.api.port,
+    tokenFile: config.api.tokenFile,
+    mqtt: config.mqtt.broker ? config.mqtt : null,
+  });
+  return; // module-level: skip the rest of the file
 }
 
 // ─── Validation ──────────────────────────────────────────────────
