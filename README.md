@@ -1,4 +1,4 @@
-# MyRide K-12 → Home Assistant MQTT Bridge
+# 🚌 MyRide K-12 → Home Assistant MQTT Bridge
 
 Real-time school bus tracking from Tyler Technologies' MyRide K-12 platform, piped
 directly into Home Assistant via MQTT. No more opening that app just to see
