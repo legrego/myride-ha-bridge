@@ -17,6 +17,7 @@ RUN addgroup -S bridge && adduser -S bridge -G bridge
 # Copy production deps and source
 COPY --from=deps /app/node_modules ./node_modules
 COPY src/ ./src/
+COPY public/ ./public/
 COPY package.json ./
 
 # Token persistence volume (mounted at TOKEN_FILE path)
