@@ -47,8 +47,9 @@ auto-discovers the entities and gives you:
 └─────────────────┘                         └───────────────────────┘
 
 ┌─────────────────┐
-│  api-server     │  ← POST /token to update credentials at runtime
-│  (port 8099)    │  ← GET  /status for health check
+│  api-server     │  ← POST /token  — submit new refresh token
+│  (port 8099)    │  ← GET  /status — JSON health check
+│                 │  ← GET  /       — browser status UI
 └─────────────────┘
 ```
 
@@ -294,6 +295,41 @@ automation:
             in the browser and POST the new token to the bridge.
 ```
 
+## Status Page
+
+Once the bridge is running, open **`http://YOUR_BRIDGE_HOST:8099`** in a browser.
+The status page shows:
+
+- **SignalR** — connected / disconnected
+- **MQTT** — connected / disconnected
+- **Credentials** — valid / expired
+- **Token Expires** — when the current access token will need refreshing
+
+The page also has a text field to paste a new refresh token directly — handy when
+you're on your phone and don't want to `curl`.  It polls `/status` every 15 seconds
+and updates without a full page reload.
+
+A blue **SIMULATION MODE** banner appears at the top when the bridge is running with
+`SIMULATE=true`.
+
+## Simulation Mode
+
+Simulate the full bridge without a real MyRide account or MQTT broker:
+
+```bash
+npm run simulate
+# or
+SIMULATE=true node src/index.js
+```
+
+This starts four fake buses (BUS 001, BUS 002, BUS 042, BUS 099) doing a random walk
+around a generic suburban area, emitting location updates every 5 seconds. The API
+server runs normally, so you can open `http://localhost:8099` and see the status UI,
+or POST a token (it will be accepted but ignored).
+
+If `MQTT_BROKER` is set, the simulator publishes the fake locations to MQTT so you
+can test your Home Assistant automations without waiting for real bus data.
+
 ## Token Lifecycle
 
 | Token | Lifetime | Auto-renewed? |
@@ -350,20 +386,3 @@ Remove `BUS_FILTER` temporarily to see if any district buses are reporting.
 Make sure you are fully logged in before running the script — the `oidc.user`
 sessionStorage key is only populated after authentication completes. If it still
 finds nothing, use the Network tab method described in the setup section.
-
-## Files
-
-```
-myride-ha-bridge/
-├── index.js            # Main entry point & token lifecycle
-├── cognito-auth.js     # Cognito REFRESH_TOKEN_AUTH via HTTP API
-├── signalr-client.js   # SignalR LiveVehicleHub client
-├── mqtt-bridge.js      # MQTT publisher with HA auto-discovery
-├── api-server.js       # HTTP API for runtime token updates & health
-├── capture-tokens.js   # Browser console snippet for token capture
-├── .env.example        # Configuration template
-├── .env                # Your config (git-ignored)
-├── .gitignore
-├── package.json
-└── README.md
-```

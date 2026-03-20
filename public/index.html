@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MyRide HA Bridge</title>
+  <style>
+    :root {
+      --yellow: #FFD700;
+      --yellow-dark: #e6c200;
+      --blue: #4A90D9;
+      --green: #2E7D32;
+      --red: #D32F2F;
+      --bg: #FFFDE7;
+      --card: #FFFFFF;
+      --text: #1A1A1A;
+      --muted: #666;
+      --radius: 10px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--yellow);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 4px solid var(--yellow-dark);
+    }
+
+    header h1 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+
+    header .bus-icon {
+      font-size: 1.6rem;
+    }
+
+    main {
+      max-width: 560px;
+      margin: 32px auto;
+      padding: 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+    }
+
+    .card-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      padding: 14px 20px 10px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .status-grid {
+      padding: 16px 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .status-item label {
+      display: block;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .pill.ok {
+      background: #E8F5E9;
+      color: var(--green);
+    }
+
+    .pill.warn {
+      background: #FFEBEE;
+      color: var(--red);
+    }
+
+    .pill.info {
+      background: #E3F2FD;
+      color: var(--blue);
+    }
+
+    .pill.dim {
+      background: #F5F5F5;
+      color: var(--muted);
+    }
+
+    .status-item .value {
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+
+    .refresh-note {
+      font-size: 0.72rem;
+      color: var(--muted);
+      padding: 6px 20px 14px;
+      text-align: right;
+    }
+
+    form {
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 90px;
+      padding: 10px 12px;
+      border: 1.5px solid #ddd;
+      border-radius: 6px;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 0.78rem;
+      resize: vertical;
+      background: #fafafa;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: var(--blue);
+    }
+
+    button {
+      align-self: flex-start;
+      padding: 9px 20px;
+      background: var(--yellow);
+      border: 2px solid var(--yellow-dark);
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: var(--yellow-dark);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    #token-msg {
+      font-size: 0.82rem;
+      padding: 8px 12px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    #token-msg.ok {
+      background: #E8F5E9;
+      color: var(--green);
+      display: block;
+    }
+
+    #token-msg.warn {
+      background: #FFEBEE;
+      color: var(--red);
+      display: block;
+    }
+
+    #sim-banner {
+      display: none;
+      background: #1565C0;
+      color: #fff;
+      text-align: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 6px 16px;
+    }
+
+    #sim-banner.visible {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="sim-banner">SIMULATION MODE — no real data</div>
+  <header>
+    <span class="bus-icon">🚌</span>
+    <h1>MyRide HA Bridge</h1>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="card-title">Bridge Status</div>
+      <div class="status-grid">
+        <div class="status-item">
+          <label>MyRide K-12</label>
+          <span id="s-signalr" class="pill dim">—</span>
+        </div>
+        <div class="status-item">
+          <label>MQTT</label>
+          <span id="s-mqtt" class="pill dim">—</span>
+        </div>
+        <div class="status-item">
+          <label>Credentials</label>
+          <span id="s-creds" class="pill dim">—</span>
+        </div>
+        <div class="status-item">
+          <label>Token Expires</label>
+          <span id="s-expires" class="value">—</span>
+        </div>
+      </div>
+      <div class="refresh-note" id="last-refresh">Fetching…</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Update Refresh Token</div>
+      <form id="token-form">
+        <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
+          spellcheck="false"></textarea>
+        <div id="token-msg"></div>
+        <button type="submit">Submit Token</button>
+      </form>
+    </div>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+
+    function setPill(id, ok, label) {
+      const el = $(id);
+      el.textContent = label;
+      el.className = 'pill ' + (ok ? 'ok' : 'warn');
+    }
+
+    function fmt(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    async function fetchStatus() {
+      try {
+        const r = await fetch('/status');
+        const s = await r.json();
+        $('sim-banner').className = s.simulate ? 'visible' : '';
+        setPill('s-signalr', s.signalrConnected, s.signalrConnected ? 'Connected' : 'Disconnected');
+        setPill('s-mqtt', s.mqttConnected, s.mqttConnected ? 'Connected' : 'Disconnected');
+        setPill('s-creds', !s.tokenExpired, s.tokenExpired ? 'Expired' : 'Valid');
+        $('s-expires').textContent = s.tokenExpiresAt ? fmt(s.tokenExpiresAt) : '—';
+        $('last-refresh').textContent = 'Last updated ' + new Date().toLocaleTimeString();
+      } catch {
+        $('last-refresh').textContent = 'Status unavailable';
+      }
+    }
+
+    $('token-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const token = $('token-input').value.trim();
+      const msg = $('token-msg');
+      if (!token) { msg.className = 'warn'; msg.textContent = 'Token cannot be empty.'; return; }
+      const btn = e.target.querySelector('button');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/token', { method: 'POST', body: token });
+        const data = await r.json();
+        if (r.ok) {
+          msg.className = 'ok';
+          msg.textContent = data.message || 'Token accepted.';
+          $('token-input').value = '';
+          fetchStatus();
+        } else {
+          msg.className = 'warn';
+          msg.textContent = data.error || 'Submission failed.';
+        }
+      } catch {
+        msg.className = 'warn';
+        msg.textContent = 'Network error — could not reach the bridge.';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    fetchStatus();
+    setInterval(fetchStatus, 15000);
+  </script>
+</body>
+
+</html>

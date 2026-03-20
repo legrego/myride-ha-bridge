@@ -9,9 +9,10 @@ A Node.js bridge that streams real-time school bus GPS data from Tyler Technolog
 ## Commands
 
 ```bash
-npm install       # Install dependencies
-npm start         # Run the bridge (node index.js)
-npm test          # Syntax-check all .js files (node -c, no test framework)
+npm install          # Install dependencies
+npm start            # Run the bridge (node src/index.js)
+npm run simulate     # Run in simulation mode (SIMULATE=true node src/index.js)
+npm test             # Run the node:test suite (test/*.test.js)
 ```
 
 ## Configuration
@@ -28,12 +29,25 @@ Copy `.env.example` to `.env`. Key variables:
 ## Architecture
 
 ```
-index.js (Orchestrator)
-  ├── CognitoAuth  →  refreshes access token every 50 min via Cognito REFRESH_TOKEN_AUTH
-  ├── MyRideSignalRClient  →  connects to LiveVehicleHub, emits 'location' events
-  ├── MqttBridge  →  publishes HA auto-discovery configs + retained location messages
-  └── ApiServer   →  HTTP API for runtime token updates (POST /token, GET /status)
+src/index.js (Orchestrator)
+  ├── CognitoAuth         →  refreshes access token every 50 min via Cognito REFRESH_TOKEN_AUTH
+  ├── MyRideSignalRClient →  connects to LiveVehicleHub, emits 'location' events
+  ├── MqttBridge          →  publishes HA auto-discovery configs + retained location messages
+  └── ApiServer           →  HTTP server (port 8099)
+        ├── POST /token   →  submit new refresh token (persists + hot-reloads)
+        ├── GET  /status  →  JSON health check
+        └── GET  /        →  browser status UI (public/index.html)
+
+src/simulator.js  —  activated via SIMULATE=true; emits fake NewLocation events
+                      from four fake buses every 5s; ApiServer runs normally so
+                      the UI and /status are accessible for local testing
 ```
+
+**Simulation Mode:** Set `SIMULATE=true` (or `npm run simulate`) to run without a
+real MyRide account. Four fake buses do a random walk around a New York area suburb.
+The API server runs at the configured port so the status UI is accessible and
+POST /token is accepted (but ignored). Optionally connects to MQTT if `MQTT_BROKER`
+is set so HA automations can be tested against fake data.
 
 **Token Bootstrap:** Users run `capture-tokens.js` as a browser console snippet to extract the Cognito refresh token from their MyRide session. The token is stored in sessionStorage under a key starting with `oidc.user`; the value is JSON with a `refresh_token` property. Direct email/password auth is disabled by Tyler Technologies. Tokens can be submitted at runtime via `POST /token` (no restart needed).
 

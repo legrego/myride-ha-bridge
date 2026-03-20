@@ -67,69 +67,6 @@
     }
   }
 
-  // ─── Strategy 3: Scan all storage for Cognito JWTs ───
-  const allStorage = [
-    ...Array.from({ length: localStorage.length }, (_, i) => [localStorage.key(i), localStorage.getItem(localStorage.key(i))]),
-    ...Array.from({ length: sessionStorage.length }, (_, i) => [sessionStorage.key(i), sessionStorage.getItem(sessionStorage.key(i))]),
-  ];
-
-  for (const [key, val] of allStorage) {
-    if (isJwt(val)) {
-      const payload = decodeJwt(val);
-      if (payload && payload.client_id === CLIENT_ID && payload.token_use === "access") {
-        results.accessToken = results.accessToken || val;
-        results.tenantId = results.tenantId || (payload["cognito:groups"] || [])[0];
-        console.log("  ✅ Found Cognito access token (JWT scan):", key);
-      }
-    }
-  }
-
-  // ─── Strategy 4: Intercept SignalR negotiate to capture a live token ───
-  if (!results.accessToken) {
-    console.log("  ⏳ No stored tokens found. Intercepting next network request...");
-    console.log("  ⏳ Navigate to the Bus Location page to trigger a SignalR connection.");
-
-    const originalFetch = window.fetch;
-    await new Promise((resolve) => {
-      window.fetch = function (...args) {
-        const url = typeof args[0] === "string" ? args[0] : args[0]?.url;
-        if (url && url.includes("livevehiclehub")) {
-          const urlObj = new URL(url);
-          const token = urlObj.searchParams.get("access_token");
-          const tenant = urlObj.searchParams.get("x-tenant-id");
-          if (token) {
-            results.accessToken = token;
-            console.log("  ✅ Captured access token from SignalR negotiate!");
-          }
-          if (tenant) results.tenantId = tenant;
-          window.fetch = originalFetch;
-          resolve();
-        }
-        return originalFetch.apply(this, args);
-      };
-
-      const origXhr = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-        if (url && url.includes("livevehiclehub")) {
-          const urlObj = new URL(url, window.location.origin);
-          const token = urlObj.searchParams.get("access_token");
-          const tenant = urlObj.searchParams.get("x-tenant-id");
-          if (token) results.accessToken = results.accessToken || token;
-          if (tenant) results.tenantId = results.tenantId || tenant;
-          XMLHttpRequest.prototype.open = origXhr;
-          resolve();
-        }
-        return origXhr.call(this, method, url, ...rest);
-      };
-
-      setTimeout(() => {
-        window.fetch = originalFetch;
-        XMLHttpRequest.prototype.open = origXhr;
-        resolve();
-      }, 60000);
-    });
-  }
-
   // ─── Extract tenant ID from access token ───
   if (results.accessToken && !results.tenantId) {
     const payload = decodeJwt(results.accessToken);

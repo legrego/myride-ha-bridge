@@ -69,7 +69,9 @@ class ApiServer {
 
   async _handleRequest(req, res) {
     try {
-      if (req.method === "POST" && req.url === "/token") {
+      if (req.method === "GET" && req.url === "/") {
+        this._handleGetRoot(req, res);
+      } else if (req.method === "POST" && req.url === "/token") {
         await this._handlePostToken(req, res);
       } else if (req.method === "GET" && req.url === "/status") {
         this._handleGetStatus(req, res);
@@ -114,6 +116,12 @@ class ApiServer {
         error: "Token saved but validation failed: " + err.message,
       }));
     }
+  }
+
+  _handleGetRoot(_req, res) {
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"));
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(html);
   }
 
   _handleGetStatus(req, res) {
