@@ -224,7 +224,7 @@ class MqttBridge {
 
     // Device tracker state (home/not_home is standard, but for a bus we just
     // need the attributes for map display — state can be a zone or "not_home")
-    this.client.publish(`${this.topicPrefix}/${busId}/state`, "not_home", { retain: true });
+    //  this.client.publish(`${this.topicPrefix}/${busId}/state`, "not_home", { retain: true });
 
     // Attributes for device_tracker (latitude/longitude are magic keys HA uses for map)
     this.client.publish(
