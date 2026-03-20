@@ -145,7 +145,7 @@ class MqttBridge {
       JSON.stringify({
         name: `${assetUniqueId} Location`,
         unique_id: `myride_${busId}_location`,
-        state_topic: `${this.topicPrefix}/${busId}/state`,
+        // state_topic: `${this.topicPrefix}/${busId}/state`,
         json_attributes_topic: `${this.topicPrefix}/${busId}/attributes`,
         source_type: "gps",
         availability,
