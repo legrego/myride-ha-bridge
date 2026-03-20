@@ -55,6 +55,7 @@ class ApiServer {
         console.log(`[API] Listening on http://0.0.0.0:${this.port}`);
         console.log(`[API]   POST /token — submit new refresh token`);
         console.log(`[API]   GET  /status — bridge health check`);
+        console.log(`[API]   GET  /snippet — token capture browser snippet`);
         resolve();
       });
       this.server.on("error", reject);
@@ -75,6 +76,8 @@ class ApiServer {
         await this._handlePostToken(req, res);
       } else if (req.method === "GET" && req.url === "/status") {
         this._handleGetStatus(req, res);
+      } else if (req.method === "GET" && req.url === "/snippet") {
+        this._handleGetSnippet(req, res);
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not found" }));
@@ -122,6 +125,12 @@ class ApiServer {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"));
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(html);
+  }
+
+  _handleGetSnippet(_req, res) {
+    const snippet = fs.readFileSync(path.join(__dirname, "capture-tokens.js"), "utf-8");
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(snippet);
   }
 
   _handleGetStatus(req, res) {

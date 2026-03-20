@@ -210,6 +210,113 @@
     #sim-banner.visible {
       display: block;
     }
+
+    details.snippet-card > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 14px 20px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+
+    details.snippet-card > summary::-webkit-details-marker { display: none; }
+
+    details.snippet-card > summary::after {
+      content: "▶";
+      font-size: 0.65rem;
+      transition: transform 0.15s;
+    }
+
+    details.snippet-card[open] > summary::after {
+      transform: rotate(90deg);
+    }
+
+    .snippet-body {
+      padding: 0 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .snippet-body p {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .snippet-body ol {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.8;
+      padding-left: 20px;
+    }
+
+    .snippet-wrap {
+      position: relative;
+    }
+
+    pre#snippet-code {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 6px;
+      padding: 14px 14px 14px 14px;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      max-height: 280px;
+      white-space: pre;
+      margin: 0;
+    }
+
+    .snippet-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #copy-snippet {
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      background: var(--yellow);
+      border: 2px solid var(--yellow-dark);
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 700;
+      align-self: flex-start;
+    }
+
+    #copy-snippet:hover {
+      background: var(--yellow-dark);
+    }
+
+    #copy-snippet.copied {
+      background: #E8F5E9;
+      border-color: #81C784;
+      color: var(--green);
+    }
+
+    #copy-msg {
+      font-size: 0.8rem;
+      color: var(--green);
+      display: none;
+    }
+
+    #copy-msg.visible {
+      display: block;
+    }
+
+    #copy-msg.error {
+      color: var(--red);
+    }
   </style>
 </head>
 
@@ -243,6 +350,26 @@
       </div>
       <div class="refresh-note" id="last-refresh">Fetching…</div>
     </div>
+
+    <details class="card snippet-card">
+      <summary>Token Capture Snippet</summary>
+      <div class="snippet-body">
+        <p>If your refresh token has expired, log in to <strong>myridek12.tylerapp.com</strong>, then run this snippet in the browser DevTools console to extract a new one.</p>
+        <ol>
+          <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
+          <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
+          <li>Paste the snippet below and press Enter</li>
+          <li>Copy the <code>MYRIDE_REFRESH_TOKEN</code> value and paste it above</li>
+        </ol>
+        <div class="snippet-wrap">
+          <pre id="snippet-code">Loading…</pre>
+        </div>
+        <div class="snippet-actions">
+          <button id="copy-snippet" type="button">Copy to clipboard</button>
+          <span id="copy-msg"></span>
+        </div>
+      </div>
+    </details>
 
     <div class="card">
       <div class="card-title">Update Refresh Token</div>
@@ -314,6 +441,62 @@
 
     fetchStatus();
     setInterval(fetchStatus, 15000);
+
+    // Load snippet once when the details element is first opened
+    const snippetDetails = document.querySelector('details.snippet-card');
+    let snippetLoaded = false;
+    snippetDetails.addEventListener('toggle', async () => {
+      if (!snippetDetails.open || snippetLoaded) return;
+      snippetLoaded = true;
+      try {
+        const text = await fetch('/snippet').then(r => r.text());
+        $('snippet-code').textContent = text;
+      } catch {
+        $('snippet-code').textContent = 'Could not load snippet.';
+      }
+    });
+
+    $('copy-snippet').addEventListener('click', () => {
+      const code = $('snippet-code').textContent;
+      const btn = $('copy-snippet');
+      const msg = $('copy-msg');
+
+      function showSuccess() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        msg.textContent = 'Snippet copied to clipboard.';
+        msg.className = 'visible';
+        setTimeout(() => {
+          btn.textContent = 'Copy to clipboard';
+          btn.classList.remove('copied');
+          msg.className = '';
+        }, 2500);
+      }
+
+      function showError() {
+        msg.textContent = 'Copy failed — please select and copy the text manually.';
+        msg.className = 'visible error';
+        setTimeout(() => { msg.className = ''; }, 4000);
+      }
+
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(code).then(showSuccess, showError);
+      } else {
+        // Fallback for non-secure contexts (plain HTTP)
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = code;
+          ta.style.cssText = 'position:fixed;opacity:0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          showSuccess();
+        } catch {
+          showError();
+        }
+      }
+    });
   </script>
 </body>
 
