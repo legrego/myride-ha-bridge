@@ -165,12 +165,27 @@ async function ensureFreshToken() {
     const needsRefresh = !currentAccessToken || now >= tokenExpiresAt - 300;
     if (needsRefresh) {
       console.log("[Auth] Refreshing access token via Cognito...");
-      const tokens = await auth.refresh(config.myride.refreshToken);
-      currentAccessToken = tokens.accessToken;
-      tokenExpiresAt = tokens.expiresIn;
-      console.log(
-        `[Auth] Token refreshed, expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
-      );
+      try {
+        const tokens = await auth.refresh(config.myride.refreshToken);
+        currentAccessToken = tokens.accessToken;
+        tokenExpiresAt = tokens.expiresIn;
+        console.log(
+          `[Auth] Token refreshed, expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
+        );
+      } catch (err) {
+        // Permanent token errors (expired/revoked) must propagate immediately
+        if (err.tokenExpired) throw err;
+        // Transient error — fall back to existing token if it hasn't fully expired
+        if (currentAccessToken && now < tokenExpiresAt) {
+          console.warn(
+            `[Auth] Cognito refresh failed (${err.message}), using cached token ` +
+            `(expires in ${tokenExpiresAt - now}s)`
+          );
+        } else {
+          // No usable cached token — propagate the error
+          throw err;
+        }
+      }
     }
     return currentAccessToken;
   }
@@ -339,19 +354,26 @@ async function main() {
 
   signalrClient.on("closed", async (error) => {
     if (refreshTokenExpired) return; // already handled, don't restart
-    console.warn(
-      "[MyRide] Connection closed permanently, restarting in 30s..."
-    );
-    await new Promise((r) => setTimeout(r, 30000));
-    try {
-      await ensureFreshToken(); // refresh token before reconnect
-      await signalrClient.start();
-    } catch (err) {
-      if (err.tokenExpired) {
-        await handleTokenExpired();
-      } else {
-        console.error("[MyRide] Restart failed:", err.message);
-        process.exit(1);
+    console.warn("[MyRide] Connection closed, will rebuild with fresh connection...");
+
+    // Retry with exponential backoff, building a fresh connection each time
+    for (let attempt = 1; ; attempt++) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000);
+      console.log(`[MyRide] Rebuild attempt ${attempt} in ${delay / 1000}s...`);
+      await new Promise((r) => setTimeout(r, delay));
+
+      if (refreshTokenExpired) return;
+      try {
+        await ensureFreshToken();
+        await signalrClient.start(); // builds a brand-new HubConnection
+        console.log("[MyRide] Rebuild successful.");
+        return;
+      } catch (err) {
+        if (err.tokenExpired) {
+          await handleTokenExpired();
+          return;
+        }
+        console.error(`[MyRide] Rebuild attempt ${attempt} failed: ${err.message}`);
       }
     }
   });
