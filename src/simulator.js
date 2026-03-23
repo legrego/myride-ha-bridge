@@ -75,6 +75,8 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   }
   console.log();
 
+  const busStates = new Map();
+
   const apiServer = new ApiServer({
     port,
     tokenFile,
@@ -89,6 +91,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
       tokenExpiresInSeconds: 50 * 60,
       signalrConnected: true,
       mqttConnected: mqttBridge ? mqttBridge.client.connected : false,
+      buses: Array.from(busStates.values()).sort((a, b) => a.name.localeCompare(b.name)),
     }),
   });
 
@@ -100,6 +103,12 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   const timer = setInterval(() => {
     for (const bus of FAKE_BUSES) {
       const loc = randomWalk(bus);
+      busStates.set(loc.assetUniqueId, {
+        name: loc.assetUniqueId,
+        lastSeen: loc.logTime,
+        speed: loc.speed,
+        moving: loc.speed > 0,
+      });
       count++;
       if (count === 1 || count % 10 === 0) {
         console.log(
