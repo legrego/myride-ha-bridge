@@ -464,24 +464,26 @@
     }
 
     const STALE_SECONDS = 300; // 5 minutes
+    let lastBuses = [];
 
     function renderBuses(buses) {
+      lastBuses = buses || [];
       const list = $('bus-list');
       const title = $('bus-title');
-      if (!buses || buses.length === 0) {
+      if (lastBuses.length === 0) {
         title.textContent = 'Active Buses';
         list.innerHTML = '<li class="bus-list-empty">No buses seen yet</li>';
         return;
       }
       const now = Date.now();
-      const activeCount = buses.filter(b => (now - new Date(b.lastSeen).getTime()) / 1000 < STALE_SECONDS).length;
+      const activeCount = lastBuses.filter(b => (now - new Date(b.lastSeen).getTime()) / 1000 < STALE_SECONDS).length;
       title.textContent = 'Active Buses (' + activeCount + ')';
-      list.innerHTML = buses.map(b => {
+      list.innerHTML = lastBuses.map(b => {
         const ageSec = (now - new Date(b.lastSeen).getTime()) / 1000;
         const stale = ageSec >= STALE_SECONDS;
         const pillClass = stale ? 'dim' : (b.moving ? 'ok' : 'info');
         const pillLabel = stale ? 'Stale' : (b.moving ? 'Moving' : 'Stopped');
-        return '<li class="bus-item' + (stale ? ' stale' : '') + '">' +
+        return '<li class="bus-item' + (stale ? ' stale' : '') + '" data-lastseen="' + b.lastSeen + '" data-moving="' + (b.moving ? '1' : '0') + '">' +
           '<span class="bus-name">' + b.name + '</span>' +
           '<span class="bus-meta">' +
             '<span class="bus-last-seen">' + timeAgo(b.lastSeen) + '</span>' +
@@ -490,6 +492,28 @@
         '</li>';
       }).join('');
     }
+
+    function tickBusTimes() {
+      const items = document.querySelectorAll('.bus-item[data-lastseen]');
+      if (!items.length) return;
+      const now = Date.now();
+      let activeCount = 0;
+      items.forEach(li => {
+        const lastSeen = li.getAttribute('data-lastseen');
+        const moving = li.getAttribute('data-moving') === '1';
+        const ageSec = (now - new Date(lastSeen).getTime()) / 1000;
+        const stale = ageSec >= STALE_SECONDS;
+        if (!stale) activeCount++;
+        li.className = 'bus-item' + (stale ? ' stale' : '');
+        li.querySelector('.bus-last-seen').textContent = timeAgo(lastSeen);
+        const pill = li.querySelector('.pill');
+        pill.className = 'pill ' + (stale ? 'dim' : (moving ? 'ok' : 'info'));
+        pill.textContent = stale ? 'Stale' : (moving ? 'Moving' : 'Stopped');
+      });
+      $('bus-title').textContent = 'Active Buses (' + activeCount + ')';
+    }
+
+    setInterval(tickBusTimes, 1000);
 
     async function fetchStatus() {
       try {
