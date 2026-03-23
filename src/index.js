@@ -121,6 +121,7 @@ if (!config.myride.refreshToken && !config.myride.accessToken) {
 let currentAccessToken = config.myride.accessToken || null;
 let tokenExpiresAt = 0;
 let refreshTokenExpired = false;
+const busStates = new Map(); // assetUniqueId → { name, lastSeen, speed, moving }
 
 const auth = config.myride.refreshToken
   ? new CognitoAuth({
@@ -296,6 +297,7 @@ function getBridgeStatus() {
     tokenExpiresInSeconds: tokenExpiresAt ? Math.max(0, tokenExpiresAt - now) : null,
     signalrConnected: signalrClient ? signalrClient.state === "Connected" : false,
     mqttConnected: mqttBridge ? mqttBridge.client.connected : false,
+    buses: Array.from(busStates.values()).sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
 
@@ -349,6 +351,12 @@ async function main() {
       );
       if (locationCount >= 1000) locationCount = 0; // reset counter to avoid overflow
     }
+    busStates.set(data.assetUniqueId, {
+      name: data.assetUniqueId,
+      lastSeen: data.logTime,
+      speed: data.speed,
+      moving: data.speed > 0,
+    });
     mqttBridge.publishLocation(data);
   });
 

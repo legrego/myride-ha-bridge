@@ -317,6 +317,55 @@
     #copy-msg.error {
       color: var(--red);
     }
+
+    .bus-list {
+      padding: 0;
+      list-style: none;
+    }
+
+    .bus-list-empty {
+      padding: 20px;
+      text-align: center;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .bus-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      border-bottom: 1px solid #f0f0f0;
+      transition: opacity 0.3s;
+    }
+
+    .bus-item:last-child {
+      border-bottom: none;
+    }
+
+    .bus-item.stale {
+      opacity: 0.4;
+    }
+
+    .bus-name {
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .bus-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .bus-last-seen {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    .bus-item.stale .bus-last-seen {
+      font-style: italic;
+    }
   </style>
 </head>
 
@@ -349,6 +398,13 @@
         </div>
       </div>
       <div class="refresh-note" id="last-refresh">Fetching…</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title" id="bus-title">Active Buses</div>
+      <ul class="bus-list" id="bus-list">
+        <li class="bus-list-empty">No buses seen yet</li>
+      </ul>
     </div>
 
     <details class="card snippet-card">
@@ -397,6 +453,44 @@
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
+    function timeAgo(iso) {
+      if (!iso) return '';
+      const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (diff < 0) return 'just now';
+      if (diff < 60) return diff + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    const STALE_SECONDS = 300; // 5 minutes
+
+    function renderBuses(buses) {
+      const list = $('bus-list');
+      const title = $('bus-title');
+      if (!buses || buses.length === 0) {
+        title.textContent = 'Active Buses';
+        list.innerHTML = '<li class="bus-list-empty">No buses seen yet</li>';
+        return;
+      }
+      const now = Date.now();
+      const activeCount = buses.filter(b => (now - new Date(b.lastSeen).getTime()) / 1000 < STALE_SECONDS).length;
+      title.textContent = 'Active Buses (' + activeCount + ')';
+      list.innerHTML = buses.map(b => {
+        const ageSec = (now - new Date(b.lastSeen).getTime()) / 1000;
+        const stale = ageSec >= STALE_SECONDS;
+        const pillClass = stale ? 'dim' : (b.moving ? 'ok' : 'info');
+        const pillLabel = stale ? 'Stale' : (b.moving ? 'Moving' : 'Stopped');
+        return '<li class="bus-item' + (stale ? ' stale' : '') + '">' +
+          '<span class="bus-name">' + b.name + '</span>' +
+          '<span class="bus-meta">' +
+            '<span class="bus-last-seen">' + timeAgo(b.lastSeen) + '</span>' +
+            '<span class="pill ' + pillClass + '">' + pillLabel + '</span>' +
+          '</span>' +
+        '</li>';
+      }).join('');
+    }
+
     async function fetchStatus() {
       try {
         const r = await fetch('/status');
@@ -407,6 +501,7 @@
         setPill('s-creds', !s.tokenExpired, s.tokenExpired ? 'Expired' : 'Valid');
         $('s-expires').textContent = s.tokenExpiresAt ? fmt(s.tokenExpiresAt) : '—';
         $('last-refresh').textContent = 'Last updated ' + new Date().toLocaleTimeString();
+        renderBuses(s.buses || []);
       } catch {
         $('last-refresh').textContent = 'Status unavailable';
       }
