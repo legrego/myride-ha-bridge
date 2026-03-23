@@ -62,6 +62,7 @@ class CognitoAuth {
           "AWSCognitoIdentityProviderService.InitiateAuth",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!res.ok) {

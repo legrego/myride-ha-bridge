@@ -76,6 +76,14 @@ class MyRideSignalRClient extends EventEmitter {
       })
       .withAutomaticReconnect({
         nextRetryDelayInMilliseconds: (retryContext) => {
+          // Give up after 10 attempts (~5 min with backoff) so onclose fires
+          // and a completely fresh connection can be built
+          if (retryContext.previousRetryCount >= 10) {
+            console.warn(
+              `[MyRide] Automatic reconnect exhausted after ${retryContext.previousRetryCount} attempts, will rebuild connection.`
+            );
+            return null;
+          }
           // Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
           const delay = Math.min(
             1000 * Math.pow(2, retryContext.previousRetryCount),
