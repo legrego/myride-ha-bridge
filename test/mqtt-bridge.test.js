@@ -37,13 +37,16 @@ require.cache["mqtt"] = {
 
 const { MqttBridge } = require("../src/mqtt-bridge");
 
+// Stub out the DNS/TCP pre-flight check so no real network calls are made
+const origCheckConnectivity = MqttBridge.prototype._checkConnectivity;
+MqttBridge.prototype._checkConnectivity = () => {};
+
 describe("MqttBridge", () => {
   let bridge;
 
   beforeEach(() => {
     publishCalls.length = 0;
 
-    // Suppress console.log during tests
     bridge = new MqttBridge({
       broker: "mqtt://localhost",
       port: 1883,
