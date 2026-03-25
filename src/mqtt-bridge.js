@@ -145,6 +145,7 @@ class MqttBridge {
       JSON.stringify({
         name: `${assetUniqueId} Location`,
         unique_id: `myride_${busId}_location`,
+        state_topic: `${this.topicPrefix}/${busId}/state`,
         json_attributes_topic: `${this.topicPrefix}/${busId}/attributes`,
         source_type: "gps",
         availability,
@@ -238,6 +239,9 @@ class MqttBridge {
       }),
       { retain: true }
     );
+
+    // Publish reset payload so HA clears location_name and uses GPS zone matching
+    this.client.publish(`${this.topicPrefix}/${busId}/state`, "None", { retain: true });
 
     // Individual sensors
     this.client.publish(`${this.topicPrefix}/${busId}/speed`, String(speed), { retain: true });
