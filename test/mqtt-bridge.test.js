@@ -110,6 +110,18 @@ describe("MqttBridge", () => {
       assert.equal(trackerPayload.device.model, "MyRide K-12");
       assert.deepEqual(trackerPayload.device.identifiers, ["myride_bus_042"]);
     });
+
+    it("device_tracker discovery includes state_topic for zone detection", () => {
+      publishCalls.length = 0;
+      bridge._publishDiscovery("BUS 042");
+
+      const trackerCall = publishCalls.find((c) =>
+        c[0] === "homeassistant/device_tracker/myride_bus_042/config"
+      );
+      const payload = JSON.parse(trackerCall[1]);
+      assert.equal(payload.state_topic, "myride/bus_042/state");
+      assert.equal(payload.source_type, "gps");
+    });
   });
 
   describe("publishLocation()", () => {
@@ -135,10 +147,28 @@ describe("MqttBridge", () => {
       });
 
       const topics = publishCalls.map((c) => c[0]);
+      assert.ok(topics.includes("myride/bus_042/state"));
       assert.ok(topics.includes("myride/bus_042/attributes"));
       assert.ok(topics.includes("myride/bus_042/speed"));
       assert.ok(topics.includes("myride/bus_042/heading"));
       assert.ok(topics.includes("myride/bus_042/moving"));
+    });
+
+    it("publishes state as reset payload for HA zone detection", () => {
+      bridge._publishDiscovery("BUS 042");
+      publishCalls.length = 0;
+      bridge.publishLocation({
+        assetUniqueId: "BUS 042",
+        latitude: 40.689,
+        longitude: -74.044,
+        heading: 138,
+        speed: 26,
+        logTime: "2026-03-18T18:37:41Z",
+      });
+
+      const stateCall = publishCalls.find((c) => c[0] === "myride/bus_042/state");
+      assert.ok(stateCall, "should publish to state topic");
+      assert.equal(stateCall[1], "None", "payload must be HA payload_reset so zone matching runs");
     });
 
     it("publishes speed as string", () => {
