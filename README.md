@@ -4,6 +4,8 @@ Real-time school bus tracking from Tyler Technologies' MyRide K-12 platform, pip
 directly into Home Assistant via MQTT. No more opening that app just to see
 where the bus is.
 
+![Screenshot of the status page](./status-page-screenshot.png)
+
 ## What This Does
 
 Connects to the same live GPS feed that powers the MyRide K-12 web app and mobile

@@ -5,6 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MyRide HA Bridge</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚌</text></svg>">
   <style>
     :root {
       --yellow: #FFD700;
@@ -126,6 +127,10 @@
       font-weight: 500;
     }
 
+    .value.token-expiry-ok { color: var(--green); font-weight: 600; }
+    .value.token-expiry-warn { color: #E65100; font-weight: 600; }
+    .value.token-expiry-danger { color: var(--red); font-weight: 600; }
+
     .refresh-note {
       font-size: 0.72rem;
       color: var(--muted);
@@ -196,46 +201,33 @@
       display: block;
     }
 
-    #sim-banner {
+    #sim-banner, #cred-banner {
       display: none;
-      background: #1565C0;
-      color: #fff;
       text-align: center;
-      font-size: 0.8rem;
       font-weight: 700;
       letter-spacing: 0.5px;
       padding: 6px 16px;
     }
 
-    #sim-banner.visible {
+    #sim-banner {
+      background: #1565C0;
+      color: #fff;
+      font-size: 0.8rem;
+    }
+
+    #cred-banner {
+      background: var(--red);
+      color: #fff;
+      font-size: 0.85rem;
+      padding: 10px 16px;
+    }
+
+    #sim-banner.visible, #cred-banner.visible {
       display: block;
     }
 
-    details.snippet-card > summary {
-      list-style: none;
-      cursor: pointer;
-      padding: 14px 20px;
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      user-select: none;
-    }
-
-    details.snippet-card > summary::-webkit-details-marker { display: none; }
-
-    details.snippet-card > summary::after {
-      content: "▶";
-      font-size: 0.65rem;
-      transition: transform 0.15s;
-    }
-
-    details.snippet-card[open] > summary::after {
-      transform: rotate(90deg);
+    details.snippet-card[open] > summary {
+      margin-bottom: 10px;
     }
 
     .snippet-body {
@@ -373,6 +365,83 @@
     .bus-item.stale .bus-last-seen {
       font-style: italic;
     }
+
+    .token-wrapper {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+    }
+
+    .token-wrapper > summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      padding: 14px 20px;
+      user-select: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .token-wrapper > summary::-webkit-details-marker { display: none; }
+
+    .token-wrapper > summary::after {
+      content: "\25B6";
+      font-size: 0.65rem;
+      transition: transform 0.15s;
+    }
+
+    .token-wrapper[open] > summary::after {
+      transform: rotate(90deg);
+    }
+
+    .token-wrapper-content {
+      padding: 0 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .token-wrapper-content form {
+      padding: 0;
+    }
+
+    .snippet-help-toggle {
+      font-size: 0.78rem;
+      color: var(--blue);
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+      font-weight: 500;
+      text-align: left;
+      align-self: flex-start;
+    }
+
+    .snippet-help-toggle:hover {
+      text-decoration: underline;
+    }
+
+    details.snippet-card > summary {
+      font-size: 0.78rem;
+      color: var(--blue);
+      cursor: pointer;
+      list-style: none;
+      padding: 0;
+      font-weight: 500;
+      user-select: none;
+    }
+
+    details.snippet-card > summary::-webkit-details-marker { display: none; }
+
+    details.snippet-card > summary::after {
+      content: "";
+    }
   </style>
 </head>
 
@@ -382,8 +451,16 @@
     <span class="bus-icon">🚌</span>
     <h1>MyRide HA Bridge</h1>
   </header>
+  <div id="cred-banner">Credentials expired — submit a new refresh token below</div>
 
   <main>
+    <div class="card">
+      <div class="card-title" id="bus-title">Active Buses</div>
+      <ul class="bus-list" id="bus-list">
+        <li class="bus-list-empty">No buses seen yet</li>
+      </ul>
+    </div>
+
     <div class="card">
       <div class="card-title">Bridge Status</div>
       <div class="status-grid">
@@ -407,42 +484,35 @@
       <div class="refresh-note" id="last-refresh">Fetching…</div>
     </div>
 
-    <div class="card">
-      <div class="card-title" id="bus-title">Active Buses</div>
-      <ul class="bus-list" id="bus-list">
-        <li class="bus-list-empty">No buses seen yet</li>
-      </ul>
-    </div>
-
-    <details class="card snippet-card">
-      <summary>Token Capture Snippet</summary>
-      <div class="snippet-body">
-        <p>If your refresh token has expired, log in to <strong>myridek12.tylerapp.com</strong>, then run this snippet in the browser DevTools console to extract a new one.</p>
-        <ol>
-          <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
-          <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
-          <li>Paste the snippet below and press Enter</li>
-          <li>Copy the <code>MYRIDE_REFRESH_TOKEN</code> value and paste it above</li>
-        </ol>
-        <div class="snippet-wrap">
-          <pre id="snippet-code">Loading…</pre>
-        </div>
-        <div class="snippet-actions">
-          <button id="copy-snippet" type="button">Copy to clipboard</button>
-          <span id="copy-msg"></span>
-        </div>
+    <details id="token-sections" class="card token-wrapper">
+      <summary>Token Management</summary>
+      <div class="token-wrapper-content">
+        <form id="token-form">
+          <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
+            spellcheck="false"></textarea>
+          <div id="token-msg"></div>
+          <button type="submit">Submit Token</button>
+        </form>
+        <details class="snippet-card">
+          <summary>How do I get a refresh token?</summary>
+          <div class="snippet-body">
+            <ol>
+              <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
+              <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
+              <li>Paste the snippet below and press Enter</li>
+              <li>Copy the <code>MYRIDE_REFRESH_TOKEN</code> value and paste it above</li>
+            </ol>
+            <div class="snippet-wrap">
+              <pre id="snippet-code">Loading…</pre>
+            </div>
+            <div class="snippet-actions">
+              <button id="copy-snippet" type="button">Copy to clipboard</button>
+              <span id="copy-msg"></span>
+            </div>
+          </div>
+        </details>
       </div>
     </details>
-
-    <div class="card">
-      <div class="card-title">Update Refresh Token</div>
-      <form id="token-form">
-        <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
-          spellcheck="false"></textarea>
-        <div id="token-msg"></div>
-        <button type="submit">Submit Token</button>
-      </form>
-    </div>
   </main>
 
   <script>
@@ -472,6 +542,35 @@
 
     const STALE_SECONDS = 300; // 5 minutes
     let lastBuses = [];
+    let lastTokenExpiresAt = null;
+    let lastTokenExpired = false;
+
+    function formatTokenExpiry(expiresAt, tokenExpired) {
+      const el = $('s-expires');
+      if (!expiresAt || tokenExpired) {
+        el.textContent = tokenExpired ? 'Expired' : '\u2014';
+        el.className = 'value' + (tokenExpired ? ' token-expiry-danger' : '');
+        return;
+      }
+      const diffSec = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000);
+      if (diffSec <= 0) {
+        el.textContent = 'Expired';
+        el.className = 'value token-expiry-danger';
+        return;
+      }
+      let text;
+      if (diffSec < 60) text = 'in ' + diffSec + 's';
+      else if (diffSec < 3600) text = 'in ' + Math.floor(diffSec / 60) + ' min';
+      else {
+        const h = Math.floor(diffSec / 3600);
+        const m = Math.floor((diffSec % 3600) / 60);
+        text = 'in ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+      }
+      el.textContent = text;
+      if (diffSec > 1800) el.className = 'value token-expiry-ok';
+      else if (diffSec > 600) el.className = 'value token-expiry-warn';
+      else el.className = 'value token-expiry-danger';
+    }
 
     function renderBuses(buses) {
       lastBuses = buses || [];
@@ -518,6 +617,7 @@
         pill.textContent = stale ? 'Stale' : (moving ? 'Moving' : 'Stopped');
       });
       $('bus-title').textContent = 'Active Buses (' + activeCount + ')';
+      formatTokenExpiry(lastTokenExpiresAt, lastTokenExpired);
     }
 
     setInterval(tickBusTimes, 1000);
@@ -530,8 +630,12 @@
         setPill('s-signalr', s.signalrConnected, s.signalrConnected ? 'Connected' : 'Disconnected');
         setPill('s-mqtt', s.mqttConnected, s.mqttConnected ? 'Connected' : 'Disconnected');
         setPill('s-creds', !s.tokenExpired, s.tokenExpired ? 'Expired' : 'Valid');
-        $('s-expires').textContent = s.tokenExpiresAt ? fmt(s.tokenExpiresAt) : '—';
+        $('cred-banner').className = s.tokenExpired ? 'visible' : '';
+        lastTokenExpiresAt = s.tokenExpiresAt;
+        lastTokenExpired = s.tokenExpired;
+        formatTokenExpiry(s.tokenExpiresAt, s.tokenExpired);
         $('last-refresh').textContent = 'Last updated ' + new Date().toLocaleTimeString();
+        if (s.tokenExpired) $('token-sections').open = true;
         renderBuses(s.buses || []);
       } catch {
         $('last-refresh').textContent = 'Status unavailable';
