@@ -390,8 +390,10 @@
     }
 
     .token-wrapper {
-      display: flex;
-      flex-direction: column;
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
     }
 
     .token-wrapper > summary {
@@ -403,9 +405,6 @@
       letter-spacing: 0.8px;
       color: var(--muted);
       padding: 14px 20px;
-      background: var(--card);
-      border-radius: var(--radius);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
       user-select: none;
       display: flex;
       justify-content: space-between;
@@ -424,11 +423,21 @@
       transform: rotate(90deg);
     }
 
+    .token-wrapper[open] > summary {
+      border-bottom: 1px solid #f0f0f0;
+    }
+
     .token-wrapper-content {
       display: flex;
       flex-direction: column;
-      gap: 24px;
-      margin-top: 24px;
+    }
+
+    .token-wrapper-content > .snippet-card {
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .token-wrapper-content > .snippet-card > summary {
+      padding: 14px 20px;
     }
   </style>
 </head>
@@ -475,7 +484,7 @@
     <details id="token-sections" class="token-wrapper">
       <summary>Token Management</summary>
       <div class="token-wrapper-content">
-        <details class="card snippet-card">
+        <details class="snippet-card">
           <summary>Token Capture Snippet</summary>
           <div class="snippet-body">
             <p>If your refresh token has expired, log in to <strong>myridek12.tylerapp.com</strong>, then run this snippet in the browser DevTools console to extract a new one.</p>
@@ -495,7 +504,7 @@
           </div>
         </details>
 
-        <div class="card">
+        <div>
           <div class="card-title">Update Refresh Token</div>
           <form id="token-form">
             <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
