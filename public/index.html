@@ -226,31 +226,8 @@
       display: block;
     }
 
-    details.snippet-card > summary {
-      list-style: none;
-      cursor: pointer;
-      padding: 14px 20px;
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      user-select: none;
-    }
-
-    details.snippet-card > summary::-webkit-details-marker { display: none; }
-
-    details.snippet-card > summary::after {
-      content: "▶";
-      font-size: 0.65rem;
-      transition: transform 0.15s;
-    }
-
-    details.snippet-card[open] > summary::after {
-      transform: rotate(90deg);
+    details.snippet-card[open] > summary {
+      margin-bottom: 10px;
     }
 
     .snippet-body {
@@ -423,21 +400,47 @@
       transform: rotate(90deg);
     }
 
-    .token-wrapper[open] > summary {
-      border-bottom: 1px solid #f0f0f0;
-    }
-
     .token-wrapper-content {
+      padding: 0 20px 16px;
       display: flex;
       flex-direction: column;
+      gap: 12px;
     }
 
-    .token-wrapper-content > .snippet-card {
-      border-bottom: 1px solid #f0f0f0;
+    .token-wrapper-content form {
+      padding: 0;
     }
 
-    .token-wrapper-content > .snippet-card > summary {
-      padding: 14px 20px;
+    .snippet-help-toggle {
+      font-size: 0.78rem;
+      color: var(--blue);
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+      font-weight: 500;
+      text-align: left;
+      align-self: flex-start;
+    }
+
+    .snippet-help-toggle:hover {
+      text-decoration: underline;
+    }
+
+    details.snippet-card > summary {
+      font-size: 0.78rem;
+      color: var(--blue);
+      cursor: pointer;
+      list-style: none;
+      padding: 0;
+      font-weight: 500;
+      user-select: none;
+    }
+
+    details.snippet-card > summary::-webkit-details-marker { display: none; }
+
+    details.snippet-card > summary::after {
+      content: "";
     }
   </style>
 </head>
@@ -481,13 +484,18 @@
       <div class="refresh-note" id="last-refresh">Fetching…</div>
     </div>
 
-    <details id="token-sections" class="token-wrapper">
+    <details id="token-sections" class="card token-wrapper">
       <summary>Token Management</summary>
       <div class="token-wrapper-content">
+        <form id="token-form">
+          <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
+            spellcheck="false"></textarea>
+          <div id="token-msg"></div>
+          <button type="submit">Submit Token</button>
+        </form>
         <details class="snippet-card">
-          <summary>Token Capture Snippet</summary>
+          <summary>How do I get a refresh token?</summary>
           <div class="snippet-body">
-            <p>If your refresh token has expired, log in to <strong>myridek12.tylerapp.com</strong>, then run this snippet in the browser DevTools console to extract a new one.</p>
             <ol>
               <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
               <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
@@ -503,16 +511,6 @@
             </div>
           </div>
         </details>
-
-        <div>
-          <div class="card-title">Update Refresh Token</div>
-          <form id="token-form">
-            <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
-              spellcheck="false"></textarea>
-            <div id="token-msg"></div>
-            <button type="submit">Submit Token</button>
-          </form>
-        </div>
       </div>
     </details>
   </main>
