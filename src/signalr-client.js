@@ -74,27 +74,10 @@ class MyRideSignalRClient extends EventEmitter {
         // Required for Node.js — provide the ws WebSocket implementation
         WebSocket: require("ws"),
       })
-      .withAutomaticReconnect({
-        nextRetryDelayInMilliseconds: (retryContext) => {
-          // Give up after 10 attempts (~5 min with backoff) so onclose fires
-          // and a completely fresh connection can be built
-          if (retryContext.previousRetryCount >= 10) {
-            console.warn(
-              `[MyRide] Automatic reconnect exhausted after ${retryContext.previousRetryCount} attempts, will rebuild connection.`
-            );
-            return null;
-          }
-          // Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
-          const delay = Math.min(
-            1000 * Math.pow(2, retryContext.previousRetryCount),
-            60000
-          );
-          console.log(
-            `[MyRide] Reconnecting in ${delay / 1000}s (attempt ${retryContext.previousRetryCount + 1})...`
-          );
-          return delay;
-        },
-      })
+      // No withAutomaticReconnect() — it reuses the existing HubConnection object,
+      // which with skipNegotiation produces a zombie connection that appears Connected
+      // but receives no events. Instead, we let onclose fire immediately and rely on
+      // the rebuild loop in index.js, which creates a fresh HubConnection each time.
       .configureLogging(this.logLevel)
       .build();
 
@@ -111,16 +94,6 @@ class MyRideSignalRClient extends EventEmitter {
     });
 
     // Connection lifecycle events
-    this.connection.onreconnecting((error) => {
-      console.log(`[MyRide] Connection lost, reconnecting...`, error?.message);
-      this.emit("reconnecting", error);
-    });
-
-    this.connection.onreconnected((connectionId) => {
-      console.log(`[MyRide] Reconnected (${connectionId})`);
-      this.emit("reconnected", connectionId);
-    });
-
     this.connection.onclose((error) => {
       console.log(`[MyRide] Connection closed.`, error?.message || "");
       this.emit("closed", error);
