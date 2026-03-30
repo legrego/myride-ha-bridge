@@ -362,26 +362,27 @@ async function main() {
 
   signalrClient.on("closed", async (error) => {
     if (refreshTokenExpired) return; // already handled, don't restart
-    console.warn("[MyRide] Connection closed, will rebuild with fresh connection...");
+    console.warn("[MyRide] Connection lost, reconnecting...");
 
-    // Retry with exponential backoff, building a fresh connection each time
+    // Retry with exponential backoff, building a fresh HubConnection each time.
+    // A fresh connection avoids the zombie-reconnect problem seen with skipNegotiation.
     for (let attempt = 1; ; attempt++) {
       const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000);
-      console.log(`[MyRide] Rebuild attempt ${attempt} in ${delay / 1000}s...`);
+      console.log(`[MyRide] Reconnect attempt ${attempt} in ${delay / 1000}s...`);
       await new Promise((r) => setTimeout(r, delay));
 
       if (refreshTokenExpired) return;
       try {
         await ensureFreshToken();
         await signalrClient.start(); // builds a brand-new HubConnection
-        console.log("[MyRide] Rebuild successful.");
+        console.log("[MyRide] Reconnected successfully.");
         return;
       } catch (err) {
         if (err.tokenExpired) {
           await handleTokenExpired();
           return;
         }
-        console.error(`[MyRide] Rebuild attempt ${attempt} failed: ${err.message}`);
+        console.error(`[MyRide] Reconnect attempt ${attempt} failed: ${err.message}`);
       }
     }
   });
