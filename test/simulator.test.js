@@ -73,9 +73,12 @@ describe("Simulation mode (subprocess)", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "simtest-"));
     const tokenFile = path.join(tmpDir, "token");
 
+    // Strip MQTT env vars so the simulator never attempts real broker connections
+    const { MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, ...cleanEnv } = process.env;
+
     proc = spawn("node", ["src/index.js"], {
       env: {
-        ...process.env,
+        ...cleanEnv,
         SIMULATE: "true",
         API_PORT: String(SIM_PORT),
         TOKEN_FILE: tokenFile,
