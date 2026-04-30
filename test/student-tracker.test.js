@@ -54,6 +54,16 @@ describe("stopTimeToMinutes()", () => {
   it("returns null for string without T separator", () => {
     assert.equal(stopTimeToMinutes("09:02:22"), null);
   });
+
+  it("returns null for non-numeric hours/minutes (NaN guard)", () => {
+    assert.equal(stopTimeToMinutes("1900-01-01Txx:yy:00"), null);
+  });
+
+  it("does not return NaN for non-numeric time parts", () => {
+    const result = stopTimeToMinutes("1900-01-01Tbad:data");
+    assert.equal(result, null);
+    assert.notEqual(result, NaN); // explicit: NaN must not be returned
+  });
 });
 
 // ── Unit: pickCurrentRun ─────────────────────────────────────────────────────
@@ -237,5 +247,25 @@ describe("StudentTracker", () => {
     await tracker.start(); // initial poll = 1
     await tracker.refresh();
     assert.equal(pollCount, 2);
+  });
+
+  it("concurrent _poll() calls are deduplicated by in-flight guard", async () => {
+    let pollCount = 0;
+    let resolveFirst;
+    fakeApi.getStudents = () => new Promise((resolve) => {
+      pollCount++;
+      resolveFirst = () => resolve([STUDENT_RAW]);
+    });
+
+    // _running must be true for _poll() to proceed (normally set by start())
+    tracker._running = true;
+
+    // Fire two polls concurrently; second should be skipped while first is in flight
+    const p1 = tracker._poll();
+    const p2 = tracker._poll(); // should be a no-op because _polling = true
+    resolveFirst();
+    await Promise.all([p1, p2]);
+
+    assert.equal(pollCount, 1);
   });
 });

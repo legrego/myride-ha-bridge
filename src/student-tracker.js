@@ -11,7 +11,10 @@ function stopTimeToMinutes(stopTime) {
   const parts = stopTime.split("T");
   if (parts.length < 2) return null;
   const [h, m] = parts[1].split(":");
-  return parseInt(h, 10) * 60 + parseInt(m, 10);
+  const hours = parseInt(h, 10);
+  const minutes = parseInt(m, 10);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
 }
 
 /**
@@ -113,6 +116,7 @@ class StudentTracker extends EventEmitter {
     this.students = [];
     this._timer = null;
     this._running = false;
+    this._polling = false;
   }
 
   /**
@@ -144,6 +148,8 @@ class StudentTracker extends EventEmitter {
   }
 
   async _poll() {
+    if (this._polling || !this._running) return;
+    this._polling = true;
     try {
       const raw = await this.api.getStudents();
       const now = new Date();
@@ -178,6 +184,8 @@ class StudentTracker extends EventEmitter {
     } catch (err) {
       this.logger.error(`[Students] Poll failed: ${err.message}`);
       this.emit("error", err);
+    } finally {
+      this._polling = false;
     }
   }
 }

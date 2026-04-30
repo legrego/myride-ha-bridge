@@ -115,16 +115,16 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   console.log();
 
   // Run student tracker with fake data if MQTT is available
+  let simStudentTracker = null;
   if (mqttBridge) {
     const { StudentTracker } = require("./student-tracker");
-    const fakeApi = { getStudents };
-    const tracker = new StudentTracker({ api: fakeApi, intervalMs: 15 * 60 * 1000 });
-    tracker.on("update", (snapshot) => {
+    simStudentTracker = new StudentTracker({ api: { getStudents }, intervalMs: 15 * 60 * 1000 });
+    simStudentTracker.on("update", (snapshot) => {
       for (const student of snapshot.students) {
         mqttBridge.publishStudent(student);
       }
     });
-    await tracker.start();
+    await simStudentTracker.start();
   }
 
   const busStates = new Map();
@@ -178,6 +178,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   async function shutdown(signal) {
     console.log(`\n[Sim] ${signal} received, shutting down...`);
     clearInterval(timer);
+    if (simStudentTracker) simStudentTracker.stop();
     await apiServer.stop();
     if (mqttBridge) await mqttBridge.disconnect();
     process.exit(0);
