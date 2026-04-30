@@ -328,8 +328,8 @@ class MqttBridge {
       model: "MyRide K-12",
     };
 
-    if (!this.discoveredStudents.has(uniqueId)) {
-      this.discoveredStudents.add(uniqueId);
+    if (!this.discoveredStudents.has(studentId)) {
+      this.discoveredStudents.add(studentId);
 
       // Active bus sensor
       this.client.publish(

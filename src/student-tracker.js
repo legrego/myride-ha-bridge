@@ -152,6 +152,7 @@ class StudentTracker extends EventEmitter {
     this._polling = true;
     try {
       const raw = await this.api.getStudents();
+      if (!this._running) return;
       const now = new Date();
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
 

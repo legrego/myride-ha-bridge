@@ -369,7 +369,7 @@ async function main() {
     });
   }
   studentTracker.on("error", (err) => {
-    if (err.tokenExpired) handleTokenExpired();
+    if (err.tokenExpired) handleTokenExpired().catch((e) => console.error("[Students] handleTokenExpired failed:", e.message));
   });
 
   await studentTracker.start();
