@@ -88,7 +88,7 @@ function normalizeStudent(student, nowMinutes) {
     ? todaysRuns.find((r) => r.runId === currentRunRaw.runId) || todaysRuns[0]
     : todaysRuns[0] || null;
 
-  return { uniqueId: String(uniqueId), firstName, lastName, currentRun, todaysRuns };
+  return { uniqueId: uniqueId == null ? uniqueId : String(uniqueId), firstName, lastName, currentRun, todaysRuns };
 }
 
 /**

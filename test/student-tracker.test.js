@@ -1,4 +1,4 @@
-const { describe, it, beforeEach, afterEach, mock } = require("node:test");
+const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   StudentTracker,
@@ -62,7 +62,7 @@ describe("stopTimeToMinutes()", () => {
   it("does not return NaN for non-numeric time parts", () => {
     const result = stopTimeToMinutes("1900-01-01Tbad:data");
     assert.equal(result, null);
-    assert.notEqual(result, NaN); // explicit: NaN must not be returned
+    assert.equal(Number.isNaN(result), false); // explicit: NaN must not be returned
   });
 });
 
