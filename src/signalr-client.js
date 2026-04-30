@@ -36,14 +36,25 @@ class MyRideSignalRClient extends EventEmitter {
    * @param {object} opts
    * @param {string} opts.tenantId   — district tenant UUID (from cognito:groups)
    * @param {function} opts.accessTokenFactory — async/sync fn returning current access token
-   * @param {string} [opts.busFilter] — optional bus ID to filter (e.g. "BUS 042")
+   * @param {string|function} [opts.busFilter] — optional filter: string ID for exact match,
+   *   or predicate function (assetUniqueId) => boolean. Null/undefined allows all buses.
    * @param {string} [opts.logLevel] — "debug" | "info" | "warn" | "error"
    */
   constructor({ tenantId, accessTokenFactory, busFilter, logLevel = "info" }) {
     super();
     this.tenantId = tenantId;
     this.accessTokenFactory = accessTokenFactory;
-    this.busFilter = busFilter;
+    // Normalize busFilter: string → exact-match predicate, function → use as-is
+    if (typeof busFilter === "string") {
+      this.busFilter = (id) => id === busFilter;
+      this._busFilterLabel = busFilter;
+    } else if (typeof busFilter === "function") {
+      this.busFilter = busFilter;
+      this._busFilterLabel = "(dynamic)";
+    } else {
+      this.busFilter = null;
+      this._busFilterLabel = null;
+    }
     this.connection = null;
     this.logLevel = this._parseLogLevel(logLevel);
   }
@@ -83,11 +94,7 @@ class MyRideSignalRClient extends EventEmitter {
 
     // Handle the main location event
     this.connection.on("NewLocation", (locationData) => {
-      // Filter by bus if configured
-      if (
-        this.busFilter &&
-        locationData.assetUniqueId !== this.busFilter
-      ) {
+      if (this.busFilter && !this.busFilter(locationData.assetUniqueId)) {
         return;
       }
       this.emit("location", locationData);
@@ -101,8 +108,8 @@ class MyRideSignalRClient extends EventEmitter {
 
     console.log(`[MyRide] Connecting to LiveVehicleHub...`);
     console.log(`[MyRide]   Tenant: ${this.tenantId}`);
-    if (this.busFilter) {
-      console.log(`[MyRide]   Bus filter: ${this.busFilter}`);
+    if (this._busFilterLabel) {
+      console.log(`[MyRide]   Bus filter: ${this._busFilterLabel}`);
     }
 
     await this.connection.start();
