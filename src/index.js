@@ -42,6 +42,8 @@ const { MyRideSignalRClient } = require("./signalr-client");
 const { MqttBridge } = require("./mqtt-bridge");
 const { ApiServer } = require("./api-server");
 const { runSimulation } = require("./simulator");
+const { MyRideApi } = require("./myride-api");
+const { StudentTracker } = require("./student-tracker");
 
 // ─── Configuration ───────────────────────────────────────────────
 const config = {
@@ -209,7 +211,13 @@ async function ensureFreshToken() {
 // References set by main() so handleTokenExpired can tear down gracefully
 let mqttBridge = null;
 let signalrClient = null;
+let studentTracker = null;
 let refreshInterval = null;
+
+// Dynamic bus filter driven by student assignments.
+// null = allow all; Set = allow only those IDs.
+// If BUS_FILTER env var is set it takes permanent precedence.
+let allowedBuses = config.busFilter ? new Set([config.busFilter]) : null;
 
 async function handleTokenExpired() {
   if (refreshTokenExpired) return; // already handled
@@ -229,6 +237,11 @@ async function handleTokenExpired() {
   if (refreshInterval) {
     clearInterval(refreshInterval);
     refreshInterval = null;
+  }
+
+  // Stop student tracker
+  if (studentTracker) {
+    studentTracker.stop();
   }
 
   // Disconnect SignalR (no point staying connected with bad credentials)
@@ -263,6 +276,12 @@ async function handleNewToken(newRefreshToken) {
   // Tell HA credentials are OK again
   if (mqttBridge) {
     mqttBridge.publishCredentialStatus(false);
+  }
+
+  // Restart student tracker if it was stopped
+  if (studentTracker) {
+    await studentTracker.start();
+    console.log("[Students] Tracker restarted with new credentials.");
   }
 
   // Restart SignalR if it was stopped
@@ -327,11 +346,41 @@ async function main() {
   mqttBridge.publishCredentialStatusDiscovery();
   mqttBridge.publishCredentialStatus(false);
 
-  // Step 3: Connect to SignalR
+  // Step 3: Start student tracker (drives dynamic bus filter)
+  const myRideApi = new MyRideApi({
+    accessTokenFactory: () => ensureFreshToken(),
+    tenantId: config.myride.tenantId,
+  });
+  studentTracker = new StudentTracker({ api: myRideApi });
+
+  // Wire tracker events → MQTT + dynamic filter
+  studentTracker.on("update", (snapshot) => {
+    for (const student of snapshot.students) {
+      mqttBridge.publishStudent(student);
+    }
+  });
+  // Only update the bus filter from student data if BUS_FILTER override is not set
+  if (!config.busFilter) {
+    studentTracker.on("change", (snapshot) => {
+      allowedBuses = snapshot.activeBuses.size > 0 ? snapshot.activeBuses : null;
+      console.log(
+        `[Bridge] Active buses updated: ${[...(allowedBuses || [])].join(", ") || "(all)"}`
+      );
+    });
+  }
+  studentTracker.on("error", (err) => {
+    if (err.tokenExpired) handleTokenExpired();
+  });
+
+  await studentTracker.start();
+
+  // Step 4: Connect to SignalR
   signalrClient = new MyRideSignalRClient({
     tenantId: config.myride.tenantId,
     accessTokenFactory: () => ensureFreshToken(),
-    busFilter: config.busFilter,
+    busFilter: config.busFilter
+      ? config.busFilter  // static string override
+      : (id) => allowedBuses === null || allowedBuses.has(id),
     logLevel: config.logLevel,
   });
 
@@ -389,7 +438,7 @@ async function main() {
 
   await signalrClient.start();
 
-  // Step 4: Periodic token refresh (every 50 minutes)
+  // Step 5: Periodic token refresh (every 50 minutes)
   refreshInterval = auth
     ? setInterval(async () => {
       try {
@@ -408,6 +457,7 @@ async function main() {
   async function shutdown(signal) {
     console.log(`\n[Bridge] ${signal} received, shutting down...`);
     if (refreshInterval) clearInterval(refreshInterval);
+    if (studentTracker) studentTracker.stop();
     await signalrClient.stop();
     await apiServer.stop();
     await mqttBridge.disconnect();
@@ -417,7 +467,7 @@ async function main() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  // Step 5: Start API server
+  // Step 6: Start API server
   await apiServer.start();
 
   console.log();
@@ -427,7 +477,9 @@ async function main() {
   );
   console.log(`[Bridge] Topic prefix: ${config.mqtt.topicPrefix}/`);
   if (config.busFilter) {
-    console.log(`[Bridge] Filtering for: ${config.busFilter}`);
+    console.log(`[Bridge] Filtering for: ${config.busFilter} (manual override)`);
+  } else {
+    console.log(`[Bridge] Bus filter: dynamic (driven by student assignments)`);
   }
   if (!auth) {
     const remaining = tokenExpiresAt - Math.floor(Date.now() / 1000);

@@ -24,6 +24,7 @@ class MqttBridge {
   constructor({ broker, port = 1883, username, password, topicPrefix = "myride" }) {
     this.topicPrefix = topicPrefix;
     this.discoveredBuses = new Set();
+    this.discoveredStudents = new Set();
 
 
 
@@ -295,6 +296,102 @@ class MqttBridge {
     this.client.publish(
       `${this.topicPrefix}/bridge/credentials`,
       expired ? "ON" : "OFF",
+      { retain: true }
+    );
+  }
+
+  /**
+   * Publish HA discovery + state for a student's bus assignment.
+   * Idempotent per student; re-publishes state on every call.
+   *
+   * @param {object} student — normalized student from StudentTracker
+   */
+  publishStudent(student) {
+    const { uniqueId, firstName, lastName, currentRun, todaysRuns } = student;
+    if (!uniqueId || !currentRun) return;
+
+    const studentId = this._sanitizeId(uniqueId);
+    const displayName = `${firstName} ${lastName}`.trim() || uniqueId;
+    const stateTopic = `${this.topicPrefix}/student/${studentId}/state`;
+    const attributesTopic = `${this.topicPrefix}/student/${studentId}/attributes`;
+    const substituteTopic = `${this.topicPrefix}/student/${studentId}/substitute`;
+
+    const availability = {
+      topic: `${this.topicPrefix}/bridge/status`,
+      payload_available: "online",
+      payload_not_available: "offline",
+    };
+    const deviceConfig = {
+      identifiers: [`myride_student_${studentId}`],
+      name: `${displayName} Bus`,
+      manufacturer: "Tyler Technologies",
+      model: "MyRide K-12",
+    };
+
+    if (!this.discoveredStudents.has(uniqueId)) {
+      this.discoveredStudents.add(uniqueId);
+
+      // Active bus sensor
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_bus/config`,
+        JSON.stringify({
+          name: `${displayName} Bus Today`,
+          unique_id: `myride_student_${studentId}_bus`,
+          state_topic: stateTopic,
+          json_attributes_topic: attributesTopic,
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-school",
+        }),
+        { retain: true }
+      );
+
+      // Substitute binary sensor
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_substitute/config`,
+        JSON.stringify({
+          name: `${displayName} Substitute Bus`,
+          unique_id: `myride_student_${studentId}_substitute`,
+          state_topic: substituteTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          device_class: "problem",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-alert",
+        }),
+        { retain: true }
+      );
+
+      console.log(`[MQTT] Published HA discovery for student ${displayName}`);
+    }
+
+    // State: active bus
+    this.client.publish(stateTopic, currentRun.activeVehicle || "unknown", { retain: true });
+
+    // Attributes
+    this.client.publish(
+      attributesTopic,
+      JSON.stringify({
+        student_name: displayName,
+        regular_bus: currentRun.busNumber,
+        active_bus: currentRun.activeVehicle,
+        is_substitute: currentRun.isSubstitute,
+        run_id: currentRun.runId,
+        todays_runs: todaysRuns.map((r) => ({
+          run_id: r.runId,
+          regular_bus: r.busNumber,
+          active_bus: r.activeVehicle,
+          is_substitute: r.isSubstitute,
+        })),
+      }),
+      { retain: true }
+    );
+
+    // Substitute flag
+    this.client.publish(
+      substituteTopic,
+      currentRun.isSubstitute ? "ON" : "OFF",
       { retain: true }
     );
   }

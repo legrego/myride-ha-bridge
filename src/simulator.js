@@ -23,6 +23,44 @@ const FAKE_BUSES = [
   { id: "BUS 099", lat: 40.7168, lng: -74.0110, heading: 90,  speed: 14 },
 ];
 
+// Fake student: normally rides BUS 042 (AM), today BUS 099 is substituting.
+// PM run uses BUS 042 as usual. Mirrors the real Lucas/bus-57 scenario.
+const FAKE_STUDENTS = [
+  {
+    uniqueId: "sim_001",
+    firstName: "Lucas",
+    lastName: "Sim",
+    runInfo: [
+      {
+        runId: 1,
+        busNumber: "BUS 042",
+        activeVehicle: "BUS 099",  // substitute today
+        stopsInfo: [
+          { stopTime: "1900-01-01T08:45:00", actionType: "Pickup" },
+          { stopTime: "1900-01-01T09:10:00", actionType: "Dropoff" },
+        ],
+      },
+      {
+        runId: 2,
+        busNumber: "BUS 042",
+        activeVehicle: "BUS 042",  // no substitute for PM
+        stopsInfo: [
+          { stopTime: "1900-01-01T15:15:00", actionType: "Pickup" },
+          { stopTime: "1900-01-01T15:45:00", actionType: "Dropoff" },
+        ],
+      },
+    ],
+  },
+];
+
+/**
+ * Returns fake student data in the same shape as MyRideApi.getStudents().
+ * Used by the orchestrator when SIMULATE=true.
+ */
+async function getStudents() {
+  return FAKE_STUDENTS;
+}
+
 const TICK_MS = 5000; // emit a location update every 5 s
 
 function randomWalk(bus) {
@@ -61,12 +99,13 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   console.log("╚══════════════════════════════════════════════════╝");
   console.log();
   console.log(`[Sim] Fake buses: ${FAKE_BUSES.map((b) => b.id).join(", ")}`);
+  console.log(`[Sim] Fake students: ${FAKE_STUDENTS.map((s) => `${s.firstName} ${s.lastName}`).join(", ")}`);
   console.log(`[Sim] Tick interval: ${TICK_MS / 1000}s`);
 
   // Optionally connect to MQTT if broker config is present
   let mqttBridge = null;
   if (mqtt) {
-    console.log("[Sim] MQTT broker configured — will publish fake locations.");
+    console.log("[Sim] MQTT broker configured — will publish fake locations and student sensors.");
     mqttBridge = new MqttBridge(mqtt);
     mqttBridge.publishCredentialStatusDiscovery();
     mqttBridge.publishCredentialStatus(false);
@@ -74,6 +113,19 @@ async function runSimulation({ port, tokenFile, mqtt }) {
     console.log("[Sim] No MQTT_BROKER set — running without MQTT.");
   }
   console.log();
+
+  // Run student tracker with fake data if MQTT is available
+  if (mqttBridge) {
+    const { StudentTracker } = require("./student-tracker");
+    const fakeApi = { getStudents };
+    const tracker = new StudentTracker({ api: fakeApi, intervalMs: 15 * 60 * 1000 });
+    tracker.on("update", (snapshot) => {
+      for (const student of snapshot.students) {
+        mqttBridge.publishStudent(student);
+      }
+    });
+    await tracker.start();
+  }
 
   const busStates = new Map();
 
@@ -135,4 +187,4 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-module.exports = { runSimulation };
+module.exports = { runSimulation, getStudents, FAKE_STUDENTS };

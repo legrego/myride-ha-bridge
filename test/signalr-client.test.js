@@ -55,14 +55,44 @@ describe("MyRideSignalRClient", () => {
   });
 
   describe("constructor", () => {
-    it("stores tenantId and busFilter", () => {
+    it("stores tenantId", () => {
       const client = new MyRideSignalRClient({
         tenantId: "abc-123",
         accessTokenFactory: () => "tok",
         busFilter: "BUS 042",
       });
       assert.equal(client.tenantId, "abc-123");
-      assert.equal(client.busFilter, "BUS 042");
+    });
+
+    it("wraps string busFilter as an exact-match predicate", () => {
+      const client = new MyRideSignalRClient({
+        tenantId: "t",
+        accessTokenFactory: () => "tok",
+        busFilter: "BUS 042",
+      });
+      assert.equal(typeof client.busFilter, "function");
+      assert.equal(client.busFilter("BUS 042"), true);
+      assert.equal(client.busFilter("BUS 099"), false);
+    });
+
+    it("accepts a predicate function directly", () => {
+      const pred = (id) => id.startsWith("BUS 0");
+      const client = new MyRideSignalRClient({
+        tenantId: "t",
+        accessTokenFactory: () => "tok",
+        busFilter: pred,
+      });
+      assert.equal(typeof client.busFilter, "function");
+      assert.equal(client.busFilter("BUS 042"), true);
+      assert.equal(client.busFilter("MINIBUS 1"), false);
+    });
+
+    it("sets busFilter to null when no filter provided", () => {
+      const client = new MyRideSignalRClient({
+        tenantId: "t",
+        accessTokenFactory: () => "tok",
+      });
+      assert.equal(client.busFilter, null);
     });
 
     it("defaults logLevel to Information", () => {
@@ -84,6 +114,11 @@ describe("MyRideSignalRClient", () => {
   });
 
   describe("bus filter logic", () => {
+    function applyFilter(client, locationData) {
+      if (client.busFilter && !client.busFilter(locationData.assetUniqueId)) return false;
+      return true;
+    }
+
     it("emits location when no filter is set", (_, done) => {
       const client = new MyRideSignalRClient({
         tenantId: "t",
@@ -96,15 +131,10 @@ describe("MyRideSignalRClient", () => {
         done();
       });
 
-      // Simulate what start() does: wire up NewLocation handler then trigger it
-      // We simulate by directly emitting 'location' the way the handler would
-      // Since we can't easily mock the full SignalR chain, we test the filter logic
-      // by calling the handler logic directly
-      const shouldEmit = !client.busFilter || locationData.assetUniqueId === client.busFilter;
-      if (shouldEmit) client.emit("location", locationData);
+      if (applyFilter(client, locationData)) client.emit("location", locationData);
     });
 
-    it("emits location when filter matches", (_, done) => {
+    it("emits location when string filter matches", (_, done) => {
       const client = new MyRideSignalRClient({
         tenantId: "t",
         accessTokenFactory: () => "tok",
@@ -117,11 +147,10 @@ describe("MyRideSignalRClient", () => {
         done();
       });
 
-      const shouldEmit = !client.busFilter || locationData.assetUniqueId === client.busFilter;
-      if (shouldEmit) client.emit("location", locationData);
+      if (applyFilter(client, locationData)) client.emit("location", locationData);
     });
 
-    it("does not emit location when filter does not match", () => {
+    it("does not emit location when string filter does not match", () => {
       const client = new MyRideSignalRClient({
         tenantId: "t",
         accessTokenFactory: () => "tok",
@@ -132,8 +161,41 @@ describe("MyRideSignalRClient", () => {
       client.on("location", () => { emitted = true; });
 
       const locationData = { assetUniqueId: "BUS 099", latitude: 40.0, longitude: -74.0 };
-      const shouldEmit = !client.busFilter || locationData.assetUniqueId === client.busFilter;
-      if (shouldEmit) client.emit("location", locationData);
+      if (applyFilter(client, locationData)) client.emit("location", locationData);
+
+      assert.equal(emitted, false);
+    });
+
+    it("emits location when predicate function returns true", (_, done) => {
+      const allowedSet = new Set(["BUS 042", "BUS 057"]);
+      const client = new MyRideSignalRClient({
+        tenantId: "t",
+        accessTokenFactory: () => "tok",
+        busFilter: (id) => allowedSet.has(id),
+      });
+
+      const locationData = { assetUniqueId: "BUS 057", latitude: 40.0, longitude: -74.0 };
+      client.on("location", (data) => {
+        assert.deepEqual(data, locationData);
+        done();
+      });
+
+      if (applyFilter(client, locationData)) client.emit("location", locationData);
+    });
+
+    it("does not emit location when predicate function returns false", () => {
+      const allowedSet = new Set(["BUS 042", "BUS 057"]);
+      const client = new MyRideSignalRClient({
+        tenantId: "t",
+        accessTokenFactory: () => "tok",
+        busFilter: (id) => allowedSet.has(id),
+      });
+
+      let emitted = false;
+      client.on("location", () => { emitted = true; });
+
+      const locationData = { assetUniqueId: "BUS 099" };
+      if (applyFilter(client, locationData)) client.emit("location", locationData);
 
       assert.equal(emitted, false);
     });

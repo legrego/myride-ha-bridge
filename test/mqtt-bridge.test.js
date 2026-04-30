@@ -272,6 +272,136 @@ describe("MqttBridge", () => {
     });
   });
 
+  describe("publishStudent()", () => {
+    const makeStudent = (overrides = {}) => ({
+      uniqueId: "2008416",
+      firstName: "Lucas",
+      lastName: "Gregory",
+      currentRun: {
+        runId: 147,
+        busNumber: "BUS 012",
+        activeVehicle: "BUS 057",
+        isSubstitute: true,
+        windowStart: 525,
+        windowEnd: 550,
+      },
+      todaysRuns: [
+        { runId: 147, busNumber: "BUS 012", activeVehicle: "BUS 057", isSubstitute: true },
+        { runId: 154, busNumber: "BUS 012", activeVehicle: "BUS 012", isSubstitute: false },
+      ],
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      bridge.discoveredStudents.clear();
+    });
+
+    it("publishes 2 discovery configs on first call", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const topics = publishCalls.map((c) => c[0]);
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_bus/config"));
+      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_substitute/config"));
+    });
+
+    it("discovery configs are retained", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const discoveryCalls = publishCalls.filter((c) => c[0].includes("/config"));
+      assert.ok(discoveryCalls.length >= 2);
+      for (const call of discoveryCalls) {
+        assert.deepEqual(call[2], { retain: true });
+      }
+    });
+
+    it("is idempotent — discovery only published once per student", () => {
+      bridge.publishStudent(makeStudent());
+      const afterFirst = publishCalls.filter((c) => c[0].includes("/config")).length;
+      bridge.publishStudent(makeStudent());
+      const afterSecond = publishCalls.filter((c) => c[0].includes("/config")).length;
+      assert.equal(afterFirst, afterSecond);
+    });
+
+    it("publishes state with activeVehicle", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const stateCall = publishCalls.find(
+        (c) => c[0] === "myride/student/2008416/state"
+      );
+      assert.ok(stateCall);
+      assert.equal(stateCall[1], "BUS 057");
+    });
+
+    it("publishes substitute=ON when isSubstitute=true", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const subCall = publishCalls.find((c) => c[0] === "myride/student/2008416/substitute");
+      assert.ok(subCall);
+      assert.equal(subCall[1], "ON");
+    });
+
+    it("publishes substitute=OFF when isSubstitute=false", () => {
+      publishCalls.length = 0;
+      const student = makeStudent();
+      student.currentRun = { ...student.currentRun, activeVehicle: "BUS 012", isSubstitute: false };
+      bridge.publishStudent(student);
+
+      const subCall = publishCalls.find((c) => c[0] === "myride/student/2008416/substitute");
+      assert.ok(subCall);
+      assert.equal(subCall[1], "OFF");
+    });
+
+    it("attributes include regular_bus, active_bus, is_substitute, student_name", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/2008416/attributes");
+      assert.ok(attrCall);
+      const attrs = JSON.parse(attrCall[1]);
+      assert.equal(attrs.regular_bus, "BUS 012");
+      assert.equal(attrs.active_bus, "BUS 057");
+      assert.equal(attrs.is_substitute, true);
+      assert.equal(attrs.student_name, "Lucas Gregory");
+    });
+
+    it("attributes include todays_runs array", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/2008416/attributes");
+      const attrs = JSON.parse(attrCall[1]);
+      assert.equal(Array.isArray(attrs.todays_runs), true);
+      assert.equal(attrs.todays_runs.length, 2);
+    });
+
+    it("skips when uniqueId is missing", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent({ uniqueId: null, currentRun: {} });
+      assert.equal(publishCalls.length, 0);
+    });
+
+    it("skips when currentRun is null", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent({ uniqueId: "123", currentRun: null });
+      assert.equal(publishCalls.length, 0);
+    });
+
+    it("substitute discovery uses device_class: problem", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const subConfig = publishCalls.find(
+        (c) => c[0] === "homeassistant/binary_sensor/myride_student_2008416_substitute/config"
+      );
+      const payload = JSON.parse(subConfig[1]);
+      assert.equal(payload.device_class, "problem");
+    });
+  });
+
   describe("disconnect()", () => {
     it("publishes offline status and ends client", async () => {
       publishCalls.length = 0;
