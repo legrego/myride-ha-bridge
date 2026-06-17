@@ -47,7 +47,6 @@ describe("MyRideApi", () => {
       assert.equal(capturedOpts.headers["x-client-language"], "en");
       assert.equal(capturedOpts.headers["x-device-type"], "browser");
       assert.equal(capturedOpts.headers["origin"], "https://myridek12.tylerapp.com");
-      // Browser-mirroring headers added to avoid upstream 417 (WAF) rejection
       assert.equal(capturedOpts.headers["accept"], "*/*");
       assert.equal(capturedOpts.headers["referer"], "https://myridek12.tylerapp.com/");
       assert.ok(/Mozilla\/5\.0/.test(capturedOpts.headers["user-agent"]));
