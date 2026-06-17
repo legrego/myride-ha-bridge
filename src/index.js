@@ -214,6 +214,12 @@ let signalrClient = null;
 let studentTracker = null;
 let refreshInterval = null;
 
+// Bus assetUniqueId → [students] whose current run rides that bus today.
+// Rebuilt on every student poll; used to route SignalR locations to students.
+const busToStudents = new Map();
+// Buses whose legacy per-bus HA entities have already been cleared (migration).
+const clearedBuses = new Set();
+
 // Dynamic bus filter driven by student assignments.
 // null = allow all; Set = allow only those IDs.
 // If BUS_FILTER env var is set it takes permanent precedence.
@@ -355,8 +361,24 @@ async function main() {
 
   // Wire tracker events → MQTT + dynamic filter
   studentTracker.on("update", (snapshot) => {
+    // Publish student discovery/state and rebuild the bus → students index
+    // so incoming SignalR locations can be routed to the right student(s).
+    busToStudents.clear();
     for (const student of snapshot.students) {
       mqttBridge.publishStudent(student);
+      const activeBus = student.currentRun && student.currentRun.activeVehicle;
+      if (activeBus) {
+        const list = busToStudents.get(activeBus) || [];
+        list.push(student);
+        busToStudents.set(activeBus, list);
+      }
+    }
+    // One-time migration: remove legacy per-bus entities from HA
+    for (const bus of snapshot.activeBuses) {
+      if (!clearedBuses.has(bus)) {
+        clearedBuses.add(bus);
+        mqttBridge.clearBusDiscovery(bus);
+      }
     }
   });
   // Only update the bus filter from student data if BUS_FILTER override is not set
@@ -406,7 +428,13 @@ async function main() {
       speed: data.speed,
       moving: data.speed > 0,
     });
-    mqttBridge.publishLocation(data);
+    // Route this bus location to every student whose current run rides it today
+    const students = busToStudents.get(data.assetUniqueId);
+    if (students) {
+      for (const student of students) {
+        mqttBridge.publishStudentLocation(student, data);
+      }
+    }
   });
 
   signalrClient.on("closed", async (error) => {

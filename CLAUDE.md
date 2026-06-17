@@ -55,14 +55,15 @@ is set so HA automations can be tested against fake data.
 
 **SignalR:** Connects to `https://myridek12.tylerapi.com/livevehiclehub` with `skipNegotiation: true` (WebSocket transport). Receives `NewLocation` events with lat/lng/speed/heading every 15–30 seconds. Reconnects with exponential backoff (1s → 60s cap).
 
-**MQTT / Home Assistant:** Publishes four entity types per bus — `device_tracker` (GPS), `sensor` (speed mph), `sensor` (heading °), `binary_sensor` (moving). Discovery configs are retained and idempotent. LWT marks bridge offline on disconnect.
+**MQTT / Home Assistant:** Entities are **student-centric**. Each student is one HA device (`myride_student_<id>`, keyed on the stable `uniqueId`) with six entities: `device_tracker` (GPS), `sensor` (speed mph), `sensor` (heading °), `binary_sensor` (moving), `sensor` (bus today), and `binary_sensor` (substitute). The `device_tracker`/speed/heading/moving entities mirror the location of whichever bus the student's *current run* rides today (substitute-aware), so the entity IDs stay stable regardless of bus number. `index.js` maintains a `busToStudents` map (rebuilt on every student poll from `currentRun.activeVehicle`) and routes each SignalR `NewLocation` to the matching student(s) via `MqttBridge.publishStudentLocation()`. Raw per-bus entities are **not** published; `MqttBridge.clearBusDiscovery()` removes legacy per-bus discovery configs from HA on upgrade. Discovery configs are retained and idempotent. LWT marks bridge offline on disconnect.
 
 ## Key Data Flow
 
 1. `index.js` calls `CognitoAuth.refresh()` to get a fresh access token
 2. `MyRideSignalRClient` uses an `accessTokenFactory` closure to lazily retrieve the current token
-3. On each `NewLocation` SignalR event, `index.js` logs the update and calls `MqttBridge.publishLocation()`
-4. `MqttBridge` sanitizes the bus ID (`"BUS 042"` → `"bus_042"`), publishes discovery on first sight, then publishes state/attributes
+3. `StudentTracker` polls `/api/student`; on each poll `index.js` publishes per-student discovery/state via `MqttBridge.publishStudent()` and rebuilds the `busToStudents` map from each student's `currentRun.activeVehicle`
+4. On each `NewLocation` SignalR event, `index.js` looks up `busToStudents` for that bus and calls `MqttBridge.publishStudentLocation(student, data)` for each matching student
+5. `MqttBridge` sanitizes the student ID (`"2008416"` → `"2008416"`), publishes discovery on first sight, then publishes the student's GPS/speed/heading/moving state
 
 ## NewLocation Event Shape
 

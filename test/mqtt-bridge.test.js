@@ -51,7 +51,6 @@ describe("MqttBridge", () => {
       password: "pass",
       topicPrefix: "myride",
     });
-    bridge.discoveredBuses.clear();
   });
 
   describe("_sanitizeId()", () => {
@@ -72,170 +71,27 @@ describe("MqttBridge", () => {
     });
   });
 
-  describe("_publishDiscovery()", () => {
-    it("publishes 4 discovery configs on first call", () => {
+  describe("clearBusDiscovery()", () => {
+    it("publishes empty retained payloads to the 4 legacy bus topics", () => {
       publishCalls.length = 0;
-      bridge._publishDiscovery("BUS 042");
+      bridge.clearBusDiscovery("BUS 042");
 
       const topics = publishCalls.map((c) => c[0]);
       assert.ok(topics.includes("homeassistant/device_tracker/myride_bus_042/config"));
       assert.ok(topics.includes("homeassistant/sensor/myride_bus_042_speed/config"));
       assert.ok(topics.includes("homeassistant/sensor/myride_bus_042_heading/config"));
       assert.ok(topics.includes("homeassistant/binary_sensor/myride_bus_042_moving/config"));
-    });
-
-    it("publishes with retain flag", () => {
-      publishCalls.length = 0;
-      bridge._publishDiscovery("BUS 042");
 
       for (const call of publishCalls) {
+        assert.equal(call[1], "", "payload must be empty to delete the entity");
         assert.deepEqual(call[2], { retain: true });
       }
     });
 
-    it("is idempotent — second call does not publish again", () => {
-      publishCalls.length = 0;
-      bridge._publishDiscovery("BUS 042");
-      const firstCount = publishCalls.length;
-      bridge._publishDiscovery("BUS 042");
-      assert.equal(publishCalls.length, firstCount);
-    });
-
-    it("discovery config includes correct device info", () => {
-      publishCalls.length = 0;
-      bridge._publishDiscovery("BUS 042");
-
-      const trackerPayload = JSON.parse(publishCalls[0][1]);
-      assert.equal(trackerPayload.device.manufacturer, "Tyler Technologies");
-      assert.equal(trackerPayload.device.model, "MyRide K-12");
-      assert.deepEqual(trackerPayload.device.identifiers, ["myride_bus_042"]);
-    });
-
-    it("device_tracker discovery includes state_topic for zone detection", () => {
-      publishCalls.length = 0;
-      bridge._publishDiscovery("BUS 042");
-
-      const trackerCall = publishCalls.find((c) =>
-        c[0] === "homeassistant/device_tracker/myride_bus_042/config"
-      );
-      const payload = JSON.parse(trackerCall[1]);
-      assert.equal(payload.state_topic, "myride/bus_042/state");
-      assert.equal(payload.source_type, "gps");
-    });
-  });
-
-  describe("publishLocation()", () => {
     it("skips when assetUniqueId is falsy", () => {
       publishCalls.length = 0;
-      bridge.publishLocation({ assetUniqueId: null });
-      // Only constructor publishes (connect event); this should add nothing
+      bridge.clearBusDiscovery(null);
       assert.equal(publishCalls.length, 0);
-    });
-
-    it("publishes state, attributes, speed, heading, moving", () => {
-      // Pre-discover so we can isolate location publishes
-      bridge._publishDiscovery("BUS 042");
-      publishCalls.length = 0;
-
-      bridge.publishLocation({
-        assetUniqueId: "BUS 042",
-        latitude: 40.689,
-        longitude: -74.044,
-        heading: 138,
-        speed: 26,
-        logTime: "2026-03-18T18:37:41Z",
-      });
-
-      const topics = publishCalls.map((c) => c[0]);
-      assert.ok(topics.includes("myride/bus_042/state"));
-      assert.ok(topics.includes("myride/bus_042/attributes"));
-      assert.ok(topics.includes("myride/bus_042/speed"));
-      assert.ok(topics.includes("myride/bus_042/heading"));
-      assert.ok(topics.includes("myride/bus_042/moving"));
-    });
-
-    it("publishes state as reset payload for HA zone detection", () => {
-      bridge._publishDiscovery("BUS 042");
-      publishCalls.length = 0;
-      bridge.publishLocation({
-        assetUniqueId: "BUS 042",
-        latitude: 40.689,
-        longitude: -74.044,
-        heading: 138,
-        speed: 26,
-        logTime: "2026-03-18T18:37:41Z",
-      });
-
-      const stateCall = publishCalls.find((c) => c[0] === "myride/bus_042/state");
-      assert.ok(stateCall, "should publish to state topic");
-      assert.equal(stateCall[1], "None", "payload must be HA payload_reset so zone matching runs");
-    });
-
-    it("publishes speed as string", () => {
-      bridge._publishDiscovery("BUS 042");
-      publishCalls.length = 0;
-      bridge.publishLocation({
-        assetUniqueId: "BUS 042",
-        latitude: 0,
-        longitude: 0,
-        heading: 0,
-        speed: 42,
-        logTime: "",
-      });
-
-      const speedCall = publishCalls.find((c) => c[0] === "myride/bus_042/speed");
-      assert.equal(speedCall[1], "42");
-    });
-
-    it("publishes moving ON when speed > 0", () => {
-      bridge._publishDiscovery("BUS 042");
-      publishCalls.length = 0;
-      bridge.publishLocation({
-        assetUniqueId: "BUS 042",
-        latitude: 0,
-        longitude: 0,
-        heading: 0,
-        speed: 10,
-        logTime: "",
-      });
-
-      const movingCall = publishCalls.find((c) => c[0] === "myride/bus_042/moving");
-      assert.equal(movingCall[1], "ON");
-    });
-
-    it("publishes moving OFF when speed is 0", () => {
-      bridge._publishDiscovery("BUS 042");
-      publishCalls.length = 0;
-      bridge.publishLocation({
-        assetUniqueId: "BUS 042",
-        latitude: 0,
-        longitude: 0,
-        heading: 0,
-        speed: 0,
-        logTime: "",
-      });
-
-      const movingCall = publishCalls.find((c) => c[0] === "myride/bus_042/moving");
-      assert.equal(movingCall[1], "OFF");
-    });
-
-    it("publishes attributes with correct lat/lng", () => {
-      bridge._publishDiscovery("BUS 042");
-      publishCalls.length = 0;
-      bridge.publishLocation({
-        assetUniqueId: "BUS 042",
-        latitude: 40.689,
-        longitude: -74.044,
-        heading: 138,
-        speed: 26,
-        logTime: "2026-03-18T18:37:41Z",
-      });
-
-      const attrCall = publishCalls.find((c) => c[0] === "myride/bus_042/attributes");
-      const attrs = JSON.parse(attrCall[1]);
-      assert.equal(attrs.latitude, 40.689);
-      assert.equal(attrs.longitude, -74.044);
-      assert.equal(attrs.gps_accuracy, 10);
     });
   });
 
@@ -296,13 +152,30 @@ describe("MqttBridge", () => {
       bridge.discoveredStudents.clear();
     });
 
-    it("publishes 2 discovery configs on first call", () => {
+    it("publishes all 6 discovery configs on first call", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
 
       const topics = publishCalls.map((c) => c[0]);
+      assert.ok(topics.includes("homeassistant/device_tracker/myride_student_2008416/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_speed/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_heading/config"));
+      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_moving/config"));
       assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_bus/config"));
       assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_substitute/config"));
+    });
+
+    it("device name is the student's display name", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const trackerCall = publishCalls.find(
+        (c) => c[0] === "homeassistant/device_tracker/myride_student_2008416/config"
+      );
+      const payload = JSON.parse(trackerCall[1]);
+      assert.equal(payload.device.name, "Lucas Gregory");
+      assert.equal(payload.source_type, "gps");
+      assert.deepEqual(payload.device.identifiers, ["myride_student_2008416"]);
     });
 
     it("discovery configs are retained", () => {
@@ -399,6 +272,95 @@ describe("MqttBridge", () => {
       );
       const payload = JSON.parse(subConfig[1]);
       assert.equal(payload.device_class, "problem");
+    });
+  });
+
+  describe("publishStudentLocation()", () => {
+    const makeStudent = () => ({
+      uniqueId: "2008416",
+      firstName: "Lucas",
+      lastName: "Gregory",
+      currentRun: {
+        runId: 147,
+        busNumber: "BUS 012",
+        activeVehicle: "BUS 057",
+        isSubstitute: true,
+      },
+      todaysRuns: [],
+    });
+    const makeLocation = (overrides = {}) => ({
+      assetUniqueId: "BUS 057",
+      latitude: 40.689,
+      longitude: -74.044,
+      heading: 138,
+      speed: 26,
+      logTime: "2026-03-18T18:37:41Z",
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      bridge.discoveredStudents.clear();
+    });
+
+    it("skips when the student has not been discovered yet", () => {
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), makeLocation());
+      assert.equal(publishCalls.length, 0);
+    });
+
+    it("skips when uniqueId is missing", () => {
+      bridge.publishStudent(makeStudent()); // discover
+      publishCalls.length = 0;
+      bridge.publishStudentLocation({ uniqueId: null }, makeLocation());
+      assert.equal(publishCalls.length, 0);
+    });
+
+    it("publishes gps_state, gps_attributes, speed, heading, moving", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), makeLocation());
+
+      const topics = publishCalls.map((c) => c[0]);
+      assert.ok(topics.includes("myride/student/2008416/gps_state"));
+      assert.ok(topics.includes("myride/student/2008416/gps_attributes"));
+      assert.ok(topics.includes("myride/student/2008416/speed"));
+      assert.ok(topics.includes("myride/student/2008416/heading"));
+      assert.ok(topics.includes("myride/student/2008416/moving"));
+    });
+
+    it("gps_state is the reset payload for HA zone detection", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), makeLocation());
+
+      const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/gps_state");
+      assert.equal(stateCall[1], "None");
+    });
+
+    it("gps_attributes include lat/lng and the active bus", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), makeLocation());
+
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/2008416/gps_attributes");
+      const attrs = JSON.parse(attrCall[1]);
+      assert.equal(attrs.latitude, 40.689);
+      assert.equal(attrs.longitude, -74.044);
+      assert.equal(attrs.gps_accuracy, 10);
+      assert.equal(attrs.active_bus, "BUS 057");
+      assert.equal(attrs.regular_bus, "BUS 012");
+      assert.equal(attrs.is_substitute, true);
+    });
+
+    it("publishes speed as string and moving ON/OFF", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), makeLocation({ speed: 0 }));
+
+      const speedCall = publishCalls.find((c) => c[0] === "myride/student/2008416/speed");
+      assert.equal(speedCall[1], "0");
+      const movingCall = publishCalls.find((c) => c[0] === "myride/student/2008416/moving");
+      assert.equal(movingCall[1], "OFF");
     });
   });
 
