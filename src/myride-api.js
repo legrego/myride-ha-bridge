@@ -2,6 +2,11 @@
 
 const API_BASE = "https://myridek12.tylerapi.com";
 
+const CLIENT_VERSION = "2026.2.17+bcb384";
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+
 class MyRideApi {
   /**
    * @param {object} opts
@@ -26,9 +31,16 @@ class MyRideApi {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
-        "x-tenant-id": this.tenantId,
+        accept: "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        pragma: "no-cache",
+        referer: "https://myridek12.tylerapp.com/",
+        "user-agent": USER_AGENT,
         "x-client-language": "en",
+        "x-client-version": CLIENT_VERSION,
         "x-device-type": "browser",
+        "x-tenant-id": this.tenantId,
         origin: "https://myridek12.tylerapp.com",
       },
       signal: AbortSignal.timeout(10000),

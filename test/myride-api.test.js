@@ -47,6 +47,10 @@ describe("MyRideApi", () => {
       assert.equal(capturedOpts.headers["x-client-language"], "en");
       assert.equal(capturedOpts.headers["x-device-type"], "browser");
       assert.equal(capturedOpts.headers["origin"], "https://myridek12.tylerapp.com");
+      assert.equal(capturedOpts.headers["accept"], "*/*");
+      assert.equal(capturedOpts.headers["referer"], "https://myridek12.tylerapp.com/");
+      assert.ok(/Mozilla\/5\.0/.test(capturedOpts.headers["user-agent"]));
+      assert.ok(/^\d{4}\.\d+\.\d+/.test(capturedOpts.headers["x-client-version"]));
     });
 
     it("calls accessTokenFactory to get current token", async () => {
