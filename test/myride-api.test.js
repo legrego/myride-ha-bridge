@@ -78,6 +78,8 @@ describe("MyRideApi", () => {
       globalThis.fetch = async () => ({
         ok: false,
         status: 401,
+        statusText: "Unauthorized",
+        headers: new Headers(),
         text: async () => "Unauthorized",
       });
 
@@ -94,6 +96,8 @@ describe("MyRideApi", () => {
       globalThis.fetch = async () => ({
         ok: false,
         status: 500,
+        statusText: "Internal Server Error",
+        headers: new Headers(),
         text: async () => "Internal Server Error",
       });
 
@@ -110,6 +114,8 @@ describe("MyRideApi", () => {
       globalThis.fetch = async () => ({
         ok: false,
         status: 403,
+        statusText: "Forbidden",
+        headers: new Headers(),
         text: async () => JSON.stringify({ message: "Tenant not found" }),
       });
 
@@ -125,6 +131,8 @@ describe("MyRideApi", () => {
       globalThis.fetch = async () => ({
         ok: false,
         status: 502,
+        statusText: "Bad Gateway",
+        headers: new Headers(),
         text: async () => "Bad Gateway",
       });
 
@@ -134,6 +142,40 @@ describe("MyRideApi", () => {
       } catch (err) {
         assert.match(err.message, /Bad Gateway/);
       }
+    });
+
+    it("logs diagnostics and attaches response details on failure", async () => {
+      let logged = "";
+      const apiWithLogger = new MyRideApi({
+        accessTokenFactory: async () => "test-access-token",
+        tenantId: "test-tenant-uuid",
+        logger: { error: (msg) => { logged += msg; }, log: () => {} },
+      });
+
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 417,
+        statusText: "Expectation Failed",
+        headers: new Headers({ server: "cloudflare", "cf-ray": "abc123" }),
+        text: async () => "",
+      });
+
+      try {
+        await apiWithLogger.getStudents();
+        assert.fail("should have thrown");
+      } catch (err) {
+        assert.equal(err.status, 417);
+        assert.equal(err.statusText, "Expectation Failed");
+        assert.equal(err.responseHeaders["cf-ray"], "abc123");
+        assert.equal(err.body, "");
+      }
+
+      // diagnostic log includes status, the edge/WAF response headers, and
+      // never leaks the raw bearer token
+      assert.match(logged, /417 Expectation Failed/);
+      assert.match(logged, /cloudflare/);
+      assert.match(logged, /\(empty\)/);
+      assert.doesNotMatch(logged, /Bearer test-access-token/);
     });
   });
 });
