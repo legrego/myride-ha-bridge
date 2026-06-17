@@ -1,11 +1,15 @@
 /**
- * mqtt-bridge.js — Publish MyRide bus locations to MQTT for Home Assistant.
+ * mqtt-bridge.js — Publish MyRide data to MQTT for Home Assistant.
  *
- * Creates HA entities via MQTT Discovery:
- *   - device_tracker.myride_bus_042  — map pin with lat/lng
- *   - sensor.myride_bus_042_speed    — speed in mph
- *   - sensor.myride_bus_042_heading  — compass heading
- *   - binary_sensor.myride_bus_042_moving — whether the bus is in motion
+ * Entities are student-centric: each student is one HA device whose entities
+ * follow whichever bus the student's current run maps to today (substitute or not).
+ * Created via MQTT Discovery, per student:
+ *   - device_tracker.myride_student_<id>          — map pin with lat/lng
+ *   - sensor.myride_student_<id>_speed            — speed in mph
+ *   - sensor.myride_student_<id>_heading          — compass heading
+ *   - binary_sensor.myride_student_<id>_moving    — whether the bus is in motion
+ *   - sensor.myride_student_<id>_bus              — which bus the student is on today
+ *   - binary_sensor.myride_student_<id>_substitute — whether today's bus is a substitute
  *
  * The device_tracker uses the "json_attributes" pattern so HA gets
  * latitude, longitude, and gps_accuracy in one payload.
@@ -23,7 +27,6 @@ class MqttBridge {
    */
   constructor({ broker, port = 1883, username, password, topicPrefix = "myride" }) {
     this.topicPrefix = topicPrefix;
-    this.discoveredBuses = new Set();
     this.discoveredStudents = new Set();
 
 
@@ -120,138 +123,25 @@ class MqttBridge {
   }
 
   /**
-   * Publish MQTT Discovery configs for a bus (only once per bus).
+   * Remove legacy bus-keyed entities from Home Assistant.
+   *
+   * Earlier versions of the bridge published retained discovery configs for
+   * per-bus devices. The bridge is now student-centric, so publish empty
+   * retained payloads to those topics to delete the stale entities on upgrade.
+   * Idempotent: HA ignores empty payloads for topics that were never set.
    */
-  _publishDiscovery(assetUniqueId) {
-    if (this.discoveredBuses.has(assetUniqueId)) return;
-    this.discoveredBuses.add(assetUniqueId);
-
-    const busId = this._sanitizeId(assetUniqueId);
-    const deviceConfig = {
-      identifiers: [`myride_${busId}`],
-      name: `School Bus ${assetUniqueId}`,
-      manufacturer: "Tyler Technologies",
-      model: "MyRide K-12",
-      sw_version: "1.0",
-    };
-    const availability = {
-      topic: `${this.topicPrefix}/bridge/status`,
-      payload_available: "online",
-      payload_not_available: "offline",
-    };
-
-    // Device tracker (provides map position)
-    this.client.publish(
-      `homeassistant/device_tracker/myride_${busId}/config`,
-      JSON.stringify({
-        name: `${assetUniqueId} Location`,
-        unique_id: `myride_${busId}_location`,
-        state_topic: `${this.topicPrefix}/${busId}/state`,
-        json_attributes_topic: `${this.topicPrefix}/${busId}/attributes`,
-        source_type: "gps",
-        availability,
-        device: deviceConfig,
-        icon: "mdi:bus-school",
-      }),
-      { retain: true }
-    );
-
-    // Speed sensor
-    this.client.publish(
-      `homeassistant/sensor/myride_${busId}_speed/config`,
-      JSON.stringify({
-        name: `${assetUniqueId} Speed`,
-        unique_id: `myride_${busId}_speed`,
-        state_topic: `${this.topicPrefix}/${busId}/speed`,
-        unit_of_measurement: "mph",
-        device_class: "speed",
-        state_class: "measurement",
-        availability,
-        device: deviceConfig,
-        icon: "mdi:speedometer",
-      }),
-      { retain: true }
-    );
-
-    // Heading sensor
-    this.client.publish(
-      `homeassistant/sensor/myride_${busId}_heading/config`,
-      JSON.stringify({
-        name: `${assetUniqueId} Heading`,
-        unique_id: `myride_${busId}_heading`,
-        state_topic: `${this.topicPrefix}/${busId}/heading`,
-        unit_of_measurement: "°",
-        state_class: "measurement",
-        availability,
-        device: deviceConfig,
-        icon: "mdi:compass-outline",
-      }),
-      { retain: true }
-    );
-
-    // Moving binary sensor
-    this.client.publish(
-      `homeassistant/binary_sensor/myride_${busId}_moving/config`,
-      JSON.stringify({
-        name: `${assetUniqueId} Moving`,
-        unique_id: `myride_${busId}_moving`,
-        state_topic: `${this.topicPrefix}/${busId}/moving`,
-        payload_on: "ON",
-        payload_off: "OFF",
-        availability,
-        device: deviceConfig,
-        icon: "mdi:bus-clock",
-      }),
-      { retain: true }
-    );
-
-    console.log(`[MQTT] Published HA discovery for ${assetUniqueId}`);
-  }
-
-  /**
-   * Publish a NewLocation update from SignalR to MQTT.
-   * @param {object} location — NewLocation payload from SignalR
-   */
-  publishLocation(location) {
-    const { assetUniqueId, latitude, longitude, heading, speed, logTime } =
-      location;
+  clearBusDiscovery(assetUniqueId) {
     if (!assetUniqueId) return;
-
-    // Publish discovery config (idempotent)
-    this._publishDiscovery(assetUniqueId);
-
     const busId = this._sanitizeId(assetUniqueId);
-    const isMoving = speed > 0;
-
-    // Attributes for device_tracker (latitude/longitude are magic keys HA uses for map)
-    this.client.publish(
-      `${this.topicPrefix}/${busId}/attributes`,
-      JSON.stringify({
-        latitude,
-        longitude,
-        gps_accuracy: 10,
-        heading,
-        speed,
-        bus_id: assetUniqueId,
-        last_update: logTime,
-        asset_id: location.assetId,
-        vendor_id: location.vendorId,
-        visible_run: location.visibleRunName,
-      }),
-      { retain: true }
-    );
-
-    // Publish reset payload so HA clears location_name and uses GPS zone matching
-    this.client.publish(`${this.topicPrefix}/${busId}/state`, "None", { retain: true });
-
-    // Individual sensors
-    this.client.publish(`${this.topicPrefix}/${busId}/speed`, String(speed), { retain: true });
-    this.client.publish(`${this.topicPrefix}/${busId}/heading`, String(heading), { retain: true });
-    this.client.publish(
-      `${this.topicPrefix}/${busId}/moving`,
-      isMoving ? "ON" : "OFF",
-      { retain: true }
-    );
+    const legacyTopics = [
+      `homeassistant/device_tracker/myride_${busId}/config`,
+      `homeassistant/sensor/myride_${busId}_speed/config`,
+      `homeassistant/sensor/myride_${busId}_heading/config`,
+      `homeassistant/binary_sensor/myride_${busId}_moving/config`,
+    ];
+    for (const topic of legacyTopics) {
+      this.client.publish(topic, "", { retain: true });
+    }
   }
 
   /**
@@ -315,6 +205,11 @@ class MqttBridge {
     const stateTopic = `${this.topicPrefix}/student/${studentId}/state`;
     const attributesTopic = `${this.topicPrefix}/student/${studentId}/attributes`;
     const substituteTopic = `${this.topicPrefix}/student/${studentId}/substitute`;
+    const gpsStateTopic = `${this.topicPrefix}/student/${studentId}/gps_state`;
+    const gpsAttributesTopic = `${this.topicPrefix}/student/${studentId}/gps_attributes`;
+    const speedTopic = `${this.topicPrefix}/student/${studentId}/speed`;
+    const headingTopic = `${this.topicPrefix}/student/${studentId}/heading`;
+    const movingTopic = `${this.topicPrefix}/student/${studentId}/moving`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -323,13 +218,78 @@ class MqttBridge {
     };
     const deviceConfig = {
       identifiers: [`myride_student_${studentId}`],
-      name: `${displayName} Bus`,
+      name: displayName,
       manufacturer: "Tyler Technologies",
       model: "MyRide K-12",
     };
 
     if (!this.discoveredStudents.has(studentId)) {
       this.discoveredStudents.add(studentId);
+
+      // Device tracker (provides map position; follows today's bus)
+      this.client.publish(
+        `homeassistant/device_tracker/myride_student_${studentId}/config`,
+        JSON.stringify({
+          name: `${displayName} Location`,
+          unique_id: `myride_student_${studentId}_location`,
+          state_topic: gpsStateTopic,
+          json_attributes_topic: gpsAttributesTopic,
+          source_type: "gps",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-school",
+        }),
+        { retain: true }
+      );
+
+      // Speed sensor
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_speed/config`,
+        JSON.stringify({
+          name: `${displayName} Speed`,
+          unique_id: `myride_student_${studentId}_speed`,
+          state_topic: speedTopic,
+          unit_of_measurement: "mph",
+          device_class: "speed",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:speedometer",
+        }),
+        { retain: true }
+      );
+
+      // Heading sensor
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_heading/config`,
+        JSON.stringify({
+          name: `${displayName} Heading`,
+          unique_id: `myride_student_${studentId}_heading`,
+          state_topic: headingTopic,
+          unit_of_measurement: "°",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:compass-outline",
+        }),
+        { retain: true }
+      );
+
+      // Moving binary sensor
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_moving/config`,
+        JSON.stringify({
+          name: `${displayName} Moving`,
+          unique_id: `myride_student_${studentId}_moving`,
+          state_topic: movingTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-clock",
+        }),
+        { retain: true }
+      );
 
       // Active bus sensor
       this.client.publish(
@@ -392,6 +352,53 @@ class MqttBridge {
     this.client.publish(
       substituteTopic,
       currentRun.isSubstitute ? "ON" : "OFF",
+      { retain: true }
+    );
+  }
+
+  /**
+   * Publish a bus location update under a student's topics so the student's
+   * device_tracker follows whichever bus their current run maps to today.
+   *
+   * @param {object} student  — normalized student from StudentTracker
+   * @param {object} location — NewLocation payload from SignalR (the active bus)
+   */
+  publishStudentLocation(student, location) {
+    if (!student || !student.uniqueId) return;
+    const studentId = this._sanitizeId(student.uniqueId);
+    // Discovery must exist before state is meaningful to HA
+    if (!this.discoveredStudents.has(studentId)) return;
+
+    const { latitude, longitude, heading, speed, logTime, assetUniqueId } = location;
+    const currentRun = student.currentRun || {};
+    const isMoving = speed > 0;
+
+    // Attributes for device_tracker (latitude/longitude are magic keys HA uses for map)
+    this.client.publish(
+      `${this.topicPrefix}/student/${studentId}/gps_attributes`,
+      JSON.stringify({
+        latitude,
+        longitude,
+        gps_accuracy: 10,
+        heading,
+        speed,
+        active_bus: assetUniqueId,
+        regular_bus: currentRun.busNumber,
+        is_substitute: currentRun.isSubstitute,
+        last_update: logTime,
+      }),
+      { retain: true }
+    );
+
+    // Reset payload so HA clears location_name and uses GPS zone matching
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/gps_state`, "None", { retain: true });
+
+    // Individual sensors
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/speed`, String(speed), { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/heading`, String(heading), { retain: true });
+    this.client.publish(
+      `${this.topicPrefix}/student/${studentId}/moving`,
+      isMoving ? "ON" : "OFF",
       { retain: true }
     );
   }

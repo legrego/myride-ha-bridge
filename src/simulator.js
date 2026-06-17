@@ -114,14 +114,27 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   }
   console.log();
 
+  // Bus assetUniqueId → [students] whose current run rides that bus today.
+  const busToStudents = new Map();
+
   // Run student tracker with fake data if MQTT is available
   let simStudentTracker = null;
   if (mqttBridge) {
     const { StudentTracker } = require("./student-tracker");
     simStudentTracker = new StudentTracker({ api: { getStudents }, intervalMs: 15 * 60 * 1000 });
     simStudentTracker.on("update", (snapshot) => {
+      busToStudents.clear();
       for (const student of snapshot.students) {
         mqttBridge.publishStudent(student);
+        const activeBus = student.currentRun && student.currentRun.activeVehicle;
+        if (activeBus) {
+          const list = busToStudents.get(activeBus) || [];
+          list.push(student);
+          busToStudents.set(activeBus, list);
+        }
+      }
+      for (const bus of snapshot.activeBuses) {
+        mqttBridge.clearBusDiscovery(bus);
       }
     });
     await simStudentTracker.start();
@@ -168,7 +181,14 @@ async function runSimulation({ port, tokenFile, mqtt }) {
           `heading=${loc.heading}° speed=${loc.speed}mph`
         );
       }
-      if (mqttBridge) mqttBridge.publishLocation(loc);
+      if (mqttBridge) {
+        const students = busToStudents.get(loc.assetUniqueId);
+        if (students) {
+          for (const student of students) {
+            mqttBridge.publishStudentLocation(student, loc);
+          }
+        }
+      }
     }
     if (count >= 10000) count = 0;
   }, TICK_MS);
