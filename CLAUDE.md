@@ -23,6 +23,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `COGNITO_CLIENT_ID` — Shared value: `3c5382gsq7g13djnejo98p2d98`
 - `MQTT_BROKER`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`
 - `BUS_FILTER` — Optional single-bus filter (e.g., `BUS 042`)
+- `TZ` — District IANA timezone for run selection (default `America/New_York`)
 - `API_PORT` — HTTP API port for runtime token updates (default `8099`)
 - `TOKEN_FILE` — Persistent path for refresh token (default `/data/refresh_token`)
 
@@ -56,6 +57,8 @@ is set so HA automations can be tested against fake data.
 **SignalR:** Connects to `https://myridek12.tylerapi.com/livevehiclehub` with `skipNegotiation: true` (WebSocket transport). Receives `NewLocation` events with lat/lng/speed/heading every 15–30 seconds. Reconnects with exponential backoff (1s → 60s cap).
 
 **MQTT / Home Assistant:** Entities are **student-centric**. Each student is one HA device (`myride_student_<id>`, keyed on the stable `uniqueId`) with six entities: `device_tracker` (GPS), `sensor` (speed mph), `sensor` (heading °), `binary_sensor` (moving), `sensor` (bus today), and `binary_sensor` (substitute). The `device_tracker`/speed/heading/moving entities mirror the location of whichever bus the student's *current run* rides today (substitute-aware), so the entity IDs stay stable regardless of bus number. `index.js` maintains a `busToStudents` map (rebuilt on every student poll from `currentRun.activeVehicle`) and routes each SignalR `NewLocation` to the matching student(s) via `MqttBridge.publishStudentLocation()`. Raw per-bus entities are **not** published; `MqttBridge.clearBusDiscovery()` removes legacy per-bus discovery configs from HA on upgrade. Discovery configs are retained and idempotent. LWT marks bridge offline on disconnect.
+
+**Current-Run Selection (timezone-aware):** `StudentTracker.normalizeStudent()` picks each student's *current run* from `runInfo[]` by comparing "now" against each run's stop-time window (`pickCurrentRun`). MyRide stop times are **district-local wall-clock** times, so "now" is computed in the `TZ` timezone (default `America/New_York`) via `nowMinutesInTimeZone()` using `Intl` — **not** the container's system clock. Getting this wrong (e.g. evaluating in UTC) shifts "now" outside every run window and silently selects the wrong run — which surfaces as tracking the regular bus instead of a substitute, or vice-versa. Invalid `TZ` values fall back to the default.
 
 ## Key Data Flow
 

@@ -19,6 +19,9 @@ services:
 
       # ── Options ────────────────────────────────────────────────────────────
       BUS_FILTER: ${BUS_FILTER:-}
+      # District timezone — used to pick the currently-active run (AM/PM,
+      # regular/substitute). Defaults to America/New_York if unset.
+      TZ: ${TZ:-America/New_York}
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
       # ── API Server ─────────────────────────────────────────────────────────

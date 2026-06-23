@@ -5,6 +5,9 @@ const {
   pickCurrentRun,
   normalizeStudent,
   stopTimeToMinutes,
+  nowMinutesInTimeZone,
+  isValidTimeZone,
+  DEFAULT_TIME_ZONE,
 } = require("../src/student-tracker");
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -103,6 +106,80 @@ describe("pickCurrentRun()", () => {
   });
 });
 
+// ── Unit: isValidTimeZone ─────────────────────────────────────────────────────
+
+describe("isValidTimeZone()", () => {
+  it("accepts a valid IANA zone", () => {
+    assert.equal(isValidTimeZone("America/New_York"), true);
+  });
+
+  it("accepts UTC", () => {
+    assert.equal(isValidTimeZone("UTC"), true);
+  });
+
+  it("rejects a bogus zone", () => {
+    assert.equal(isValidTimeZone("Not/AZone"), false);
+  });
+
+  it("rejects null/empty", () => {
+    assert.equal(isValidTimeZone(null), false);
+    assert.equal(isValidTimeZone(""), false);
+  });
+});
+
+// ── Unit: nowMinutesInTimeZone ────────────────────────────────────────────────
+
+describe("nowMinutesInTimeZone()", () => {
+  // 12:55 UTC. In US Eastern (EDT, UTC-4) this is 08:55.
+  const instant = new Date("2026-06-23T12:55:00Z");
+
+  it("computes minutes-since-midnight in the given zone", () => {
+    assert.equal(nowMinutesInTimeZone(instant, "America/New_York"), 8 * 60 + 55);
+  });
+
+  it("differs from UTC by the zone offset (the bug being fixed)", () => {
+    // Reading the host clock as if it were district-local (UTC here) yields
+    // 12:55 — the wrong value that pushed "now" outside every run window.
+    assert.equal(nowMinutesInTimeZone(instant, "UTC"), 12 * 60 + 55);
+  });
+
+  it("defaults to America/New_York when no zone is given", () => {
+    assert.equal(nowMinutesInTimeZone(instant), 8 * 60 + 55);
+  });
+
+  it("falls back to the default zone for an invalid timezone", () => {
+    assert.equal(
+      nowMinutesInTimeZone(instant, "Not/AZone"),
+      nowMinutesInTimeZone(instant, DEFAULT_TIME_ZONE)
+    );
+  });
+
+  it("handles midnight as 0, not 24", () => {
+    // 04:30 UTC == 00:30 EDT
+    const midnightish = new Date("2026-06-23T04:30:00Z");
+    assert.equal(nowMinutesInTimeZone(midnightish, "America/New_York"), 30);
+  });
+});
+
+// ── Regression: timezone-correct run selection ────────────────────────────────
+
+describe("timezone-correct run selection (regression for substitute bug)", () => {
+  // At 12:55 UTC it is 08:55 Eastern — inside the AM window (08:45–09:10).
+  const instant = new Date("2026-06-23T12:55:00Z");
+
+  it("picks the in-progress AM (substitute) run when evaluated in district TZ", () => {
+    const nowMinutes = nowMinutesInTimeZone(instant, "America/New_York");
+    const run = pickCurrentRun([AM_RUN, PM_RUN], nowMinutes);
+    assert.equal(run, AM_RUN);
+    assert.equal(run.activeVehicle, "BUS 057"); // substitute, not the regular BUS 012
+  });
+
+  it("reproduces the bug when host time (UTC) is used instead", () => {
+    const wrongNow = nowMinutesInTimeZone(instant, "UTC"); // 12:55 → between windows
+    assert.equal(pickCurrentRun([AM_RUN, PM_RUN], wrongNow), PM_RUN);
+  });
+});
+
 // ── Unit: normalizeStudent ────────────────────────────────────────────────────
 
 describe("normalizeStudent()", () => {
@@ -156,6 +233,23 @@ describe("StudentTracker", () => {
 
   it("activeBuses starts empty", () => {
     assert.equal(tracker.activeBuses.size, 0);
+  });
+
+  it("defaults timeZone to America/New_York", () => {
+    assert.equal(tracker.timeZone, "America/New_York");
+  });
+
+  it("honors an explicit valid timeZone", () => {
+    const t = new StudentTracker({ api: fakeApi, timeZone: "America/Chicago", logger: silentLogger });
+    assert.equal(t.timeZone, "America/Chicago");
+  });
+
+  it("falls back to the default for an invalid timeZone", () => {
+    let logged;
+    const noisyLogger = { log: () => {}, error: (m) => { logged = m; } };
+    const t = new StudentTracker({ api: fakeApi, timeZone: "Not/AZone", logger: noisyLogger });
+    assert.equal(t.timeZone, DEFAULT_TIME_ZONE);
+    assert.match(logged, /Invalid timezone/);
   });
 
   it("emits 'update' after start() with correct snapshot", async () => {

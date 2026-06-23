@@ -152,9 +152,19 @@ MQTT_PORT=1883
 MQTT_USERNAME=mqtt_user
 MQTT_PASSWORD=mqtt_password
 
+# Your district's timezone (defaults to America/New_York).
+# Used to pick which run is active right now (AM vs PM, regular vs substitute).
+TZ=America/New_York
+
 # Only track your kid's bus
 BUS_FILTER=BUS 042
 ```
+
+> **Note:** `TZ` matters because MyRide reports stop times in the district's
+> local time. If the bridge runs in a container set to UTC and `TZ` is left at a
+> wrong value, it can pick the wrong run and track the regular bus when a
+> substitute is actually assigned (or vice-versa). Leave it at `America/New_York`
+> unless your district is in another timezone.
 
 ### 4. Run
 
@@ -402,3 +412,12 @@ Remove `BUS_FILTER` temporarily to see if any district buses are reporting.
 Make sure you are fully logged in before running the script — the `oidc.user`
 sessionStorage key is only populated after authentication completes. If it still
 finds nothing, use the Network tab method described in the setup section.
+
+### Tracking the wrong bus (e.g. regular bus instead of today's substitute)
+On days with both a morning and afternoon run, the bridge picks the run whose
+stop-time window matches the current time of day. Those stop times are in the
+**district's local time**, so an incorrect `TZ` (or a container defaulting to
+UTC) can push "now" outside the right window and select the wrong run. Confirm
+`TZ` matches your district's timezone (default `America/New_York`) and restart.
+The `sensor.myride_student_<id>_bus` entity's `todays_runs` attribute lists every
+run and which one is currently active, which is useful for confirming the fix.
