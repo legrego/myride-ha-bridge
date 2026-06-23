@@ -64,6 +64,7 @@ const config = {
     topicPrefix: process.env.MQTT_TOPIC_PREFIX || "myride",
   },
   busFilter: process.env.BUS_FILTER || null,
+  timeZone: process.env.TZ || "America/New_York",
   logLevel: process.env.LOG_LEVEL || "info",
   api: {
     port: parseInt(process.env.API_PORT || "8099"),
@@ -357,7 +358,7 @@ async function main() {
     accessTokenFactory: () => ensureFreshToken(),
     tenantId: config.myride.tenantId,
   });
-  studentTracker = new StudentTracker({ api: myRideApi });
+  studentTracker = new StudentTracker({ api: myRideApi, timeZone: config.timeZone });
 
   // Wire tracker events → MQTT + dynamic filter
   studentTracker.on("update", (snapshot) => {

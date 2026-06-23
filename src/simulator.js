@@ -121,7 +121,11 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   let simStudentTracker = null;
   if (mqttBridge) {
     const { StudentTracker } = require("./student-tracker");
-    simStudentTracker = new StudentTracker({ api: { getStudents }, intervalMs: 15 * 60 * 1000 });
+    simStudentTracker = new StudentTracker({
+      api: { getStudents },
+      intervalMs: 15 * 60 * 1000,
+      timeZone: process.env.TZ || "America/New_York",
+    });
     simStudentTracker.on("update", (snapshot) => {
       busToStudents.clear();
       for (const student of snapshot.students) {

@@ -3,6 +3,59 @@
 const { EventEmitter } = require("events");
 
 /**
+ * Default IANA timezone for interpreting "now" against district stop times.
+ * MyRide stop times are local to the district; if no timezone is configured
+ * we assume US Eastern, which covers the districts this bridge is used with.
+ */
+const DEFAULT_TIME_ZONE = "America/New_York";
+
+/**
+ * True if `timeZone` is a valid IANA timezone that Intl can resolve.
+ */
+function isValidTimeZone(timeZone) {
+  if (!timeZone) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Compute minutes-since-midnight for `date` as observed in `timeZone`.
+ *
+ * MyRide stop times are district-local wall-clock times, so "now" must be
+ * evaluated in the same timezone for the run-window comparisons in
+ * pickCurrentRun() to be correct. Relying on the host's local time
+ * (Date#getHours) breaks whenever the container runs in a different zone
+ * (e.g. UTC), which would push "now" outside every run window.
+ *
+ * Uses Intl (ICU) rather than the system clock so it works regardless of
+ * whether the OS has tzdata installed. Returns null if the time can't be
+ * parsed.
+ */
+function nowMinutesInTimeZone(date, timeZone = DEFAULT_TIME_ZONE) {
+  const effectiveZone = isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: effectiveZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  let hours = null;
+  let minutes = null;
+  for (const part of parts) {
+    if (part.type === "hour") hours = parseInt(part.value, 10);
+    else if (part.type === "minute") minutes = parseInt(part.value, 10);
+  }
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours === 24) hours = 0; // some ICU builds emit "24" at midnight
+  return hours * 60 + minutes;
+}
+
+/**
  * Parse a stopTime string like "1900-01-01T09:02:22.99" into minutes-since-midnight.
  * The date portion is always a placeholder; only the time part matters.
  */
@@ -27,7 +80,9 @@ function stopTimeToMinutes(stopTime) {
  *   4. If all windows are in the past, return the most recent one.
  *   5. If there's only one run, return it.
  *
- * NOTE: stop times are local to the district; we use system local time (TODO: district TZ).
+ * `nowMinutes` is minutes-since-midnight in the district's timezone — the
+ * caller is responsible for computing it in the correct zone (see
+ * nowMinutesInTimeZone), since stop times are district-local wall-clock times.
  */
 function pickCurrentRun(runInfo, nowMinutes) {
   if (!runInfo || runInfo.length === 0) return null;
@@ -105,13 +160,24 @@ class StudentTracker extends EventEmitter {
    * @param {object} opts
    * @param {{ getStudents: function }} opts.api — MyRideApi instance (or compatible duck)
    * @param {number} [opts.intervalMs=900000] — poll interval (default 15 min)
+   * @param {string} [opts.timeZone="America/New_York"] — IANA timezone used to
+   *   evaluate "now" against district stop times. Invalid values fall back to
+   *   the default.
    * @param {object} [opts.logger] — optional logger (defaults to console)
    */
-  constructor({ api, intervalMs = 15 * 60 * 1000, logger = console }) {
+  constructor({ api, intervalMs = 15 * 60 * 1000, timeZone = DEFAULT_TIME_ZONE, logger = console }) {
     super();
     this.api = api;
     this.intervalMs = intervalMs;
     this.logger = logger;
+    if (isValidTimeZone(timeZone)) {
+      this.timeZone = timeZone;
+    } else {
+      this.logger.error(
+        `[Students] Invalid timezone "${timeZone}"; falling back to ${DEFAULT_TIME_ZONE}`
+      );
+      this.timeZone = DEFAULT_TIME_ZONE;
+    }
     this.activeBuses = new Set();
     this.students = [];
     this._timer = null;
@@ -154,7 +220,7 @@ class StudentTracker extends EventEmitter {
       const raw = await this.api.getStudents();
       if (!this._running) return;
       const now = new Date();
-      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      const nowMinutes = nowMinutesInTimeZone(now, this.timeZone);
 
       const students = (Array.isArray(raw) ? raw : [raw]).map((s) =>
         normalizeStudent(s, nowMinutes)
@@ -191,4 +257,12 @@ class StudentTracker extends EventEmitter {
   }
 }
 
-module.exports = { StudentTracker, pickCurrentRun, normalizeStudent, stopTimeToMinutes };
+module.exports = {
+  StudentTracker,
+  pickCurrentRun,
+  normalizeStudent,
+  stopTimeToMinutes,
+  nowMinutesInTimeZone,
+  isValidTimeZone,
+  DEFAULT_TIME_ZONE,
+};
