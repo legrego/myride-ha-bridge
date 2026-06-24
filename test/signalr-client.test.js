@@ -201,6 +201,46 @@ describe("MyRideSignalRClient", () => {
     });
   });
 
+  describe("_connectionOptions()", () => {
+    it("does NOT skip negotiation (negotiate activates the bus relay)", () => {
+      const client = new MyRideSignalRClient({
+        tenantId: "tenant-1",
+        accessTokenFactory: () => "tok",
+      });
+      const opts = client._connectionOptions();
+      assert.notEqual(opts.skipNegotiation, true);
+    });
+
+    it("forces the WebSocket transport", () => {
+      const client = new MyRideSignalRClient({
+        tenantId: "tenant-1",
+        accessTokenFactory: () => "tok",
+      });
+      const opts = client._connectionOptions();
+      assert.equal(opts.transport, signalR.HttpTransportType.WebSockets);
+    });
+
+    it("passes the access token factory through", () => {
+      const factory = () => "tok";
+      const client = new MyRideSignalRClient({
+        tenantId: "tenant-1",
+        accessTokenFactory: factory,
+      });
+      assert.equal(client._connectionOptions().accessTokenFactory, factory);
+    });
+
+    it("sends browser-like headers including the tenant id on negotiate", () => {
+      const client = new MyRideSignalRClient({
+        tenantId: "tenant-abc",
+        accessTokenFactory: () => "tok",
+      });
+      const { headers } = client._connectionOptions();
+      assert.equal(headers["x-tenant-id"], "tenant-abc");
+      assert.equal(headers["x-device-type"], "browser");
+      assert.ok(headers["User-Agent"]);
+    });
+  });
+
   describe("stop()", () => {
     it("does nothing when connection is null", async () => {
       const client = new MyRideSignalRClient({
