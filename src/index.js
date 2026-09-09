@@ -337,6 +337,13 @@ async function main() {
     `[Auth] Mode: ${auth ? "refresh token (auto-renewing)" : "static access token"}`
   );
 
+  // Step 0: Start the API server FIRST so the status UI and POST /token
+  // recovery endpoint are reachable no matter what happens below. If Cognito,
+  // the student poll, or SignalR hang or throw, the page must still load —
+  // otherwise the one tool for fixing a bad token is unavailable exactly when
+  // it's needed (and the reverse proxy returns 502).
+  await apiServer.start();
+
   // Step 1: Get an initial access token
   await ensureFreshToken();
 
@@ -495,9 +502,6 @@ async function main() {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-  // Step 6: Start API server
-  await apiServer.start();
 
   console.log();
   console.log("[Bridge] Running. Press Ctrl+C to stop.");
