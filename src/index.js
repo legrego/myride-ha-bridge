@@ -62,6 +62,7 @@ const config = {
     username: process.env.MQTT_USERNAME,
     password: process.env.MQTT_PASSWORD,
     topicPrefix: process.env.MQTT_TOPIC_PREFIX || "myride",
+    approachRadiusMeters: parseInt(process.env.APPROACH_RADIUS_METERS || "500"),
   },
   busFilter: process.env.BUS_FILTER || null,
   timeZone: process.env.TZ || "America/New_York",
@@ -354,6 +355,7 @@ async function main() {
     username: config.mqtt.username,
     password: config.mqtt.password,
     topicPrefix: config.mqtt.topicPrefix,
+    approachRadiusMeters: config.mqtt.approachRadiusMeters,
   });
 
   // Publish credential status sensor (problem = OFF means credentials are OK)

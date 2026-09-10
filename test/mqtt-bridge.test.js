@@ -364,6 +364,121 @@ describe("MqttBridge", () => {
     });
   });
 
+  describe("stop tracking (my_stop / distance / eta / approaching)", () => {
+    const myStop = {
+      stopId: 1638,
+      name: "MAPLE ST @ 3RD AVE",
+      address: "MAPLE ST TESTBORO, NY 10001",
+      lat: 41.5,
+      lng: -72.0,
+      actionType: "Pickup",
+      stopTime: "1900-01-01T09:01:52.277",
+      stopTimeMinutes: 541,
+      etaMinutes: 0,
+    };
+    const makeStudent = (stop = myStop) => ({
+      uniqueId: "2008416",
+      firstName: "Lucas",
+      lastName: "Gregory",
+      currentRun: {
+        runId: 719,
+        busNumber: "BUS 012",
+        activeVehicle: "BUS 012",
+        isSubstitute: false,
+        myStop: stop,
+        myStopSeq: 14,
+        totalStops: 17,
+        stopSchedule: [{ seq: 0, stopId: 3704, time: "08:49", done: true }],
+      },
+      todaysRuns: [],
+    });
+    // Bus ~145m from the stop (well within the 500m default radius)
+    const near = { assetUniqueId: "BUS 012", latitude: 41.5013, longitude: -72.0, heading: 200, speed: 20, logTime: "2026-09-10T13:01:00Z" };
+    // Bus ~2.2km away
+    const far = { ...near, latitude: 41.52, longitude: -72.0 };
+
+    beforeEach(() => {
+      bridge.discoveredStudents.clear();
+    });
+
+    it("publishes discovery for my_stop, distance, eta and approaching", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+      const topics = publishCalls.map((c) => c[0]);
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_my_stop/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_distance_to_stop/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_eta/config"));
+      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_approaching/config"));
+    });
+
+    it("my_stop state is the stop name; attributes carry schedule and position", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+      const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop");
+      assert.equal(stateCall[1], "MAPLE ST @ 3RD AVE");
+      const attrs = JSON.parse(
+        publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop_attributes")[1]
+      );
+      assert.equal(attrs.stop_id, 1638);
+      assert.equal(attrs.action, "Pickup");
+      assert.equal(attrs.stop_number, 15); // seq 14 → 1-based 15
+      assert.equal(attrs.total_stops, 17);
+      assert.equal(attrs.schedule.length, 1);
+    });
+
+    it("my_stop state is 'unknown' when the run has no myStop", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent(null));
+      const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop");
+      assert.equal(stateCall[1], "unknown");
+    });
+
+    it("turns approaching ON and publishes distance/eta when the bus is near and moving", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), near);
+
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.ok(dist > 0 && dist < 500, `expected <500m, got ${dist}`);
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "ON");
+      const eta = publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1];
+      assert.ok(Number(eta) >= 0, `expected numeric eta, got ${eta}`);
+    });
+
+    it("turns approaching OFF when the bus is beyond the radius", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), far);
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("leaves eta blank when stopped, but still publishes distance", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), { ...near, speed: 0 });
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "");
+      assert.ok(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop"));
+    });
+
+    it("publishes empty distance/eta and OFF approaching when the stop has no coordinates", () => {
+      const noCoords = { ...myStop, lat: null, lng: null };
+      bridge.publishStudent(makeStudent(noCoords));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(noCoords), near);
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("honors a custom approachRadiusMeters", () => {
+      const tight = new MqttBridge({ broker: "mqtt://localhost", port: 1883, approachRadiusMeters: 50 });
+      tight.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      tight.publishStudentLocation(makeStudent(), near); // ~120m away, radius 50
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+  });
+
   describe("disconnect()", () => {
     it("publishes offline status and ends client", async () => {
       publishCalls.length = 0;

@@ -16,6 +16,7 @@
  */
 
 const mqtt = require("mqtt");
+const { haversineMeters } = require("./student-tracker");
 
 class MqttBridge {
   /**
@@ -24,9 +25,12 @@ class MqttBridge {
    * @param {string} [opts.username]
    * @param {string} [opts.password]
    * @param {string} [opts.topicPrefix="myride"]
+   * @param {number} [opts.approachRadiusMeters=500] — distance within which the
+   *   "Approaching My Stop" binary sensor turns ON.
    */
-  constructor({ broker, port = 1883, username, password, topicPrefix = "myride" }) {
+  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500 }) {
     this.topicPrefix = topicPrefix;
+    this.approachRadiusMeters = approachRadiusMeters;
     this.discoveredStudents = new Set();
 
 
@@ -210,6 +214,11 @@ class MqttBridge {
     const speedTopic = `${this.topicPrefix}/student/${studentId}/speed`;
     const headingTopic = `${this.topicPrefix}/student/${studentId}/heading`;
     const movingTopic = `${this.topicPrefix}/student/${studentId}/moving`;
+    const myStopTopic = `${this.topicPrefix}/student/${studentId}/my_stop`;
+    const myStopAttributesTopic = `${this.topicPrefix}/student/${studentId}/my_stop_attributes`;
+    const distanceTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
+    const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
+    const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -323,6 +332,71 @@ class MqttBridge {
         { retain: true }
       );
 
+      // My Stop sensor (the student's own stop; attributes carry the schedule)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_my_stop/config`,
+        JSON.stringify({
+          name: `${displayName} My Stop`,
+          unique_id: `myride_student_${studentId}_my_stop`,
+          state_topic: myStopTopic,
+          json_attributes_topic: myStopAttributesTopic,
+          availability,
+          device: deviceConfig,
+          icon: "mdi:map-marker",
+        }),
+        { retain: true }
+      );
+
+      // Distance to my stop (meters)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_distance_to_stop/config`,
+        JSON.stringify({
+          name: `${displayName} Distance to Stop`,
+          unique_id: `myride_student_${studentId}_distance_to_stop`,
+          state_topic: distanceTopic,
+          unit_of_measurement: "m",
+          device_class: "distance",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:map-marker-distance",
+        }),
+        { retain: true }
+      );
+
+      // ETA to my stop (minutes)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_eta/config`,
+        JSON.stringify({
+          name: `${displayName} ETA to Stop`,
+          unique_id: `myride_student_${studentId}_eta`,
+          state_topic: etaTopic,
+          unit_of_measurement: "min",
+          device_class: "duration",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:clock-outline",
+        }),
+        { retain: true }
+      );
+
+      // Approaching my stop (the automation trigger)
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_approaching/config`,
+        JSON.stringify({
+          name: `${displayName} Approaching Stop`,
+          unique_id: `myride_student_${studentId}_approaching`,
+          state_topic: approachingTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-marker",
+        }),
+        { retain: true }
+      );
+
       console.log(`[MQTT] Published HA discovery for student ${displayName}`);
     }
 
@@ -352,6 +426,25 @@ class MqttBridge {
     this.client.publish(
       substituteTopic,
       currentRun.isSubstitute ? "ON" : "OFF",
+      { retain: true }
+    );
+
+    // My stop: name as state, schedule + position in run as attributes.
+    const myStop = currentRun.myStop || null;
+    this.client.publish(myStopTopic, (myStop && myStop.name) || "unknown", { retain: true });
+    this.client.publish(
+      myStopAttributesTopic,
+      JSON.stringify({
+        stop_id: myStop ? myStop.stopId : null,
+        address: myStop ? myStop.address : null,
+        action: myStop ? myStop.actionType : null, // Pickup (AM) / Dropoff (PM)
+        scheduled_time: myStop ? myStop.stopTime : null,
+        latitude: myStop ? myStop.lat : null,
+        longitude: myStop ? myStop.lng : null,
+        stop_number: currentRun.myStopSeq == null ? null : currentRun.myStopSeq + 1,
+        total_stops: currentRun.totalStops || null,
+        schedule: currentRun.stopSchedule || [],
+      }),
       { retain: true }
     );
   }
@@ -401,6 +494,53 @@ class MqttBridge {
       isMoving ? "ON" : "OFF",
       { retain: true }
     );
+
+    // Stop tracking: distance / ETA / approaching, keyed off the student's own
+    // stop. GPS-derived from the live bus position and the authoritative stop
+    // pin, so it updates on every location event (not just each 15-min poll).
+    this._publishStopProgress(studentId, currentRun.myStop, latitude, longitude, speed);
+  }
+
+  /**
+   * Compute and publish distance/ETA/approaching for a student's own stop.
+   * No-op when the stop has no coordinates.
+   *
+   * @param {string} studentId — sanitized id
+   * @param {object|null} myStop — normalized stop ({lat, lng, ...})
+   * @param {number} busLat
+   * @param {number} busLng
+   * @param {number} speedMph — current bus speed
+   */
+  _publishStopProgress(studentId, myStop, busLat, busLng, speedMph) {
+    const distTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
+    const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
+    const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
+
+    if (!myStop || !Number.isFinite(myStop.lat) || !Number.isFinite(myStop.lng)) {
+      // Unknown stop position — publish empty states rather than stale numbers.
+      this.client.publish(distTopic, "", { retain: true });
+      this.client.publish(etaTopic, "", { retain: true });
+      this.client.publish(approachingTopic, "OFF", { retain: true });
+      return;
+    }
+
+    const meters = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
+    if (meters == null) return;
+
+    this.client.publish(distTopic, String(Math.round(meters)), { retain: true });
+
+    // ETA estimate: distance / current speed. Only meaningful while moving;
+    // when stopped we leave ETA blank rather than emit Infinity.
+    if (speedMph > 0) {
+      const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
+      const etaMin = Math.round(meters / metersPerMin);
+      this.client.publish(etaTopic, String(etaMin), { retain: true });
+    } else {
+      this.client.publish(etaTopic, "", { retain: true });
+    }
+
+    const approaching = meters <= this.approachRadiusMeters;
+    this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
   }
 
   async disconnect() {
