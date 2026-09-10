@@ -474,7 +474,49 @@ describe("MqttBridge", () => {
       const tight = new MqttBridge({ broker: "mqtt://localhost", port: 1883, approachRadiusMeters: 50 });
       tight.publishStudent(makeStudent());
       publishCalls.length = 0;
-      tight.publishStudentLocation(makeStudent(), near); // ~120m away, radius 50
+      tight.publishStudentLocation(makeStudent(), near); // ~145m away, radius 50
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("falls back to the 500m default for a NaN/≤0 approachRadiusMeters", () => {
+      for (const bad of [NaN, 0, -100, undefined]) {
+        const b = new MqttBridge({ broker: "mqtt://localhost", port: 1883, approachRadiusMeters: bad });
+        assert.equal(b.approachRadiusMeters, 500, `bad value ${bad} should fall back to 500`);
+      }
+    });
+
+    it("clears stale distance/eta/approaching when the student's stop changes", () => {
+      // First run: stop is nearby and moving → approaching ON, distance set.
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), near);
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "ON");
+
+      // Poll switches to a different stop (e.g. AM→PM) with no location yet.
+      publishCalls.length = 0;
+      const otherStop = { ...myStop, stopId: 9999, name: "OTHER STOP", lat: 40.0, lng: -75.0 };
+      bridge.publishStudent(makeStudent(otherStop));
+
+      // Progress topics must be blanked, not left showing the previous stop.
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("does not re-clear progress when the stop is unchanged between polls", () => {
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent()); // same stop id
+      assert.equal(publishCalls.filter((c) => c[0] === "myride/student/2008416/approaching").length, 0);
+      assert.equal(publishCalls.filter((c) => c[0] === "myride/student/2008416/distance_to_stop").length, 0);
+    });
+
+    it("clears progress when the stop becomes unavailable", () => {
+      bridge.publishStudent(makeStudent());
+      bridge.publishStudentLocation(makeStudent(), near);
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent(null)); // no myStop
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "");
       assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
     });
   });

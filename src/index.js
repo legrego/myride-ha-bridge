@@ -62,7 +62,8 @@ const config = {
     username: process.env.MQTT_USERNAME,
     password: process.env.MQTT_PASSWORD,
     topicPrefix: process.env.MQTT_TOPIC_PREFIX || "myride",
-    approachRadiusMeters: parseInt(process.env.APPROACH_RADIUS_METERS || "500"),
+    // Parsed loosely; MqttBridge validates and falls back to 500 for NaN/≤0.
+    approachRadiusMeters: Number(process.env.APPROACH_RADIUS_METERS),
   },
   busFilter: process.env.BUS_FILTER || null,
   timeZone: process.env.TZ || "America/New_York",

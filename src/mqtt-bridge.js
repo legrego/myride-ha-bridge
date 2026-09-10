@@ -30,8 +30,17 @@ class MqttBridge {
    */
   constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500 }) {
     this.topicPrefix = topicPrefix;
-    this.approachRadiusMeters = approachRadiusMeters;
+    // Guard against NaN/≤0 (e.g. a malformed APPROACH_RADIUS_METERS): an invalid
+    // radius would make `meters <= radius` always false and silently disable the
+    // "approaching" trigger. Fall back to the documented 500 m default.
+    this.approachRadiusMeters =
+      Number.isFinite(approachRadiusMeters) && approachRadiusMeters > 0
+        ? approachRadiusMeters
+        : 500;
     this.discoveredStudents = new Set();
+    // studentId → last published myStop.stopId, so we can clear stale distance/
+    // ETA/approaching when the student's stop changes (e.g. AM→PM) or disappears.
+    this.lastStopByStudent = new Map();
 
 
 
@@ -447,6 +456,17 @@ class MqttBridge {
       }),
       { retain: true }
     );
+
+    // Clear stale live-progress topics when the student's stop changes (e.g. the
+    // poll switched from the AM to the PM run) or when there is no stop. Otherwise
+    // the retained distance/ETA/approaching values from the previous stop linger
+    // until the next matching bus location — indefinitely if the new run has no
+    // active bus. Fresh values are republished by publishStudentLocation().
+    const curStopId = myStop ? myStop.stopId : null;
+    if (curStopId !== this.lastStopByStudent.get(studentId)) {
+      this._clearStopProgress(studentId);
+      this.lastStopByStudent.set(studentId, curStopId);
+    }
   }
 
   /**
@@ -502,6 +522,19 @@ class MqttBridge {
   }
 
   /**
+   * Blank the live-progress topics (distance/ETA empty, approaching OFF) so no
+   * stale value from a previous stop lingers. Used when the stop is unknown or
+   * when the student's stop identity changes.
+   *
+   * @param {string} studentId — sanitized id
+   */
+  _clearStopProgress(studentId) {
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/distance_to_stop`, "", { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/eta`, "", { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/approaching`, "OFF", { retain: true });
+  }
+
+  /**
    * Compute and publish distance/ETA/approaching for a student's own stop.
    * No-op when the stop has no coordinates.
    *
@@ -518,9 +551,7 @@ class MqttBridge {
 
     if (!myStop || !Number.isFinite(myStop.lat) || !Number.isFinite(myStop.lng)) {
       // Unknown stop position — publish empty states rather than stale numbers.
-      this.client.publish(distTopic, "", { retain: true });
-      this.client.publish(etaTopic, "", { retain: true });
-      this.client.publish(approachingTopic, "OFF", { retain: true });
+      this._clearStopProgress(studentId);
       return;
     }
 
