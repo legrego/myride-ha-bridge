@@ -62,6 +62,8 @@ const config = {
     username: process.env.MQTT_USERNAME,
     password: process.env.MQTT_PASSWORD,
     topicPrefix: process.env.MQTT_TOPIC_PREFIX || "myride",
+    // Parsed loosely; MqttBridge validates and falls back to 500 for NaN/≤0.
+    approachRadiusMeters: Number(process.env.APPROACH_RADIUS_METERS),
   },
   busFilter: process.env.BUS_FILTER || null,
   timeZone: process.env.TZ || "America/New_York",
@@ -354,6 +356,7 @@ async function main() {
     username: config.mqtt.username,
     password: config.mqtt.password,
     topicPrefix: config.mqtt.topicPrefix,
+    approachRadiusMeters: config.mqtt.approachRadiusMeters,
   });
 
   // Publish credential status sensor (problem = OFF means credentials are OK)

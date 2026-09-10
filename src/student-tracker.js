@@ -71,6 +71,135 @@ function stopTimeToMinutes(stopTime) {
 }
 
 /**
+ * Format minutes-since-midnight as "HH:MM" (24h). Returns null for null input.
+ */
+function formatMinutes(mins) {
+  if (mins == null || !Number.isFinite(mins)) return null;
+  const h = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * Great-circle distance between two lat/lng points, in meters.
+ * Returns null if any coordinate is missing/non-finite.
+ */
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  if (![lat1, lng1, lat2, lng2].every((n) => Number.isFinite(n))) return null;
+  const R = 6371000; // Earth radius in meters
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Build a normalized "my stop" descriptor for one run.
+ *
+ * MyRide's `stopsInfo` contains ONLY this student's own stops (their Pickup and
+ * Dropoff), each carrying a friendly name and authoritative coordinates. The
+ * stop the parent cares about is the *home-side* one (Pickup in the morning,
+ * Dropoff in the afternoon), which is the stop nearest the student's home.
+ *
+ * Selection priority:
+ *   1. Nearest to the student's home coordinates (most robust — works for both
+ *      AM and PM runs regardless of Pickup/Dropoff labeling).
+ *   2. The stop whose locationName differs from the school's (home stop's
+ *      locationName is blank; the school stop carries the school name).
+ *   3. The Pickup stop, else the first stop.
+ *
+ * @param {object} run — a raw run from runInfo[]
+ * @param {{latitude:number, longitude:number}} [home] — student home coordinates
+ * @param {string} [schoolName] — the student's school (top-level locationName)
+ * @returns {object|null} normalized stop, or null when no stopsInfo is present
+ */
+function pickMyStop(run, home, schoolName) {
+  const stops = (run && run.stopsInfo) || [];
+  if (stops.length === 0) return null;
+
+  let chosen = null;
+
+  // 1. Nearest to home
+  if (home && Number.isFinite(home.latitude) && Number.isFinite(home.longitude)) {
+    let best = Infinity;
+    for (const s of stops) {
+      const d = haversineMeters(home.latitude, home.longitude, s.stopLat, s.stopLong);
+      if (d != null && d < best) {
+        best = d;
+        chosen = s;
+      }
+    }
+  }
+
+  // 2. Not-the-school by name
+  if (!chosen && schoolName) {
+    const norm = (v) => String(v || "").trim().toLowerCase();
+    const school = norm(schoolName);
+    const nonSchool = stops.filter((s) => norm(s.locationName) !== school);
+    if (nonSchool.length === 1) chosen = nonSchool[0];
+  }
+
+  // 3. Pickup, then first
+  if (!chosen) {
+    chosen = stops.find((s) => s.actionType === "Pickup") || stops[0];
+  }
+
+  const name =
+    chosen.stopDescription ||
+    chosen.stopAddress ||
+    (chosen.stopId != null ? `Stop ${chosen.stopId}` : null);
+  const addressParts = [
+    chosen.stopAddress,
+    [chosen.stopCity, chosen.stopState].filter(Boolean).join(", "),
+    chosen.stopZip,
+  ].filter(Boolean);
+
+  return {
+    stopId: chosen.stopId != null ? chosen.stopId : null,
+    name,
+    address: chosen.stopAddressFull || addressParts.join(" ") || null,
+    lat: Number.isFinite(chosen.stopLat) ? chosen.stopLat : null,
+    lng: Number.isFinite(chosen.stopLong) ? chosen.stopLong : null,
+    actionType: chosen.actionType || null,
+    stopTime: chosen.stopTime || null,
+    stopTimeMinutes: stopTimeToMinutes(chosen.stopTime),
+    etaMinutes: Number.isFinite(chosen.etaMinutes) ? chosen.etaMinutes : null,
+  };
+}
+
+/**
+ * Collapse a run's turn-by-turn `runDetail` into an ordered stop schedule.
+ *
+ * `runDetail` has one row per direction segment; many rows share a `runStopSeq`.
+ * We keep one entry per runStopSeq (the stop it leads to), carrying its stopId
+ * and scheduled time. `nowMinutes` (district-local) marks each stop done/upcoming.
+ *
+ * @returns {{stops: Array, totalStops: number}}
+ */
+function summarizeRunStops(run, nowMinutes) {
+  const detail = (run && run.runDetail) || [];
+  const bySeq = new Map();
+  for (const row of detail) {
+    if (row == null || row.runStopSeq == null) continue;
+    if (!bySeq.has(row.runStopSeq)) {
+      const mins = stopTimeToMinutes(row.stopTime);
+      bySeq.set(row.runStopSeq, {
+        seq: row.runStopSeq,
+        stopId: row.stopId != null ? row.stopId : null,
+        stopTimeMinutes: mins,
+        time: formatMinutes(mins),
+        done: mins != null && nowMinutes != null ? mins <= nowMinutes : null,
+      });
+    }
+  }
+  const stops = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+  return { stops, totalStops: stops.length };
+}
+
+/**
  * Pick which run in runInfo[] is "current" based on the time of day.
  *
  * Strategy:
@@ -121,7 +250,7 @@ function pickCurrentRun(runInfo, nowMinutes) {
  * Normalize a raw student object from /api/student into a simpler shape.
  */
 function normalizeStudent(student, nowMinutes) {
-  const { uniqueId, firstName, lastName, runInfo = [] } = student;
+  const { uniqueId, firstName, lastName, runInfo = [], homeAddress, locationName } = student;
 
   const todaysRuns = runInfo.map((run) => {
     const stops = run.stopsInfo || [];
@@ -142,6 +271,22 @@ function normalizeStudent(student, nowMinutes) {
   const currentRun = currentRunRaw
     ? todaysRuns.find((r) => r.runId === currentRunRaw.runId) || todaysRuns[0]
     : todaysRuns[0] || null;
+
+  // Enrich the current run with the student's own stop and the run's stop
+  // schedule so the bridge can publish stop-tracking entities. Derived from the
+  // *raw* current run (todaysRuns entries don't carry runDetail).
+  if (currentRun && currentRunRaw) {
+    const myStop = pickMyStop(currentRunRaw, homeAddress, locationName);
+    const { stops, totalStops } = summarizeRunStops(currentRunRaw, nowMinutes);
+    const myStopSeq =
+      myStop && myStop.stopId != null
+        ? (stops.find((s) => s.stopId === myStop.stopId) || {}).seq
+        : undefined;
+    currentRun.myStop = myStop;
+    currentRun.stopSchedule = stops;
+    currentRun.totalStops = totalStops;
+    currentRun.myStopSeq = myStopSeq == null ? null : myStopSeq;
+  }
 
   return { uniqueId: uniqueId == null ? uniqueId : String(uniqueId), firstName, lastName, currentRun, todaysRuns };
 }
@@ -262,6 +407,10 @@ module.exports = {
   pickCurrentRun,
   normalizeStudent,
   stopTimeToMinutes,
+  formatMinutes,
+  haversineMeters,
+  pickMyStop,
+  summarizeRunStops,
   nowMinutesInTimeZone,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,

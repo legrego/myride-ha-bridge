@@ -5,6 +5,10 @@ const {
   pickCurrentRun,
   normalizeStudent,
   stopTimeToMinutes,
+  formatMinutes,
+  haversineMeters,
+  pickMyStop,
+  summarizeRunStops,
   nowMinutesInTimeZone,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
@@ -210,6 +214,158 @@ describe("normalizeStudent()", () => {
 
   it("returns null currentRun for empty runInfo", () => {
     const s = normalizeStudent({ uniqueId: "1", firstName: "A", lastName: "B", runInfo: [] }, 0);
+    assert.equal(s.currentRun, null);
+  });
+});
+
+// ── Unit: formatMinutes ───────────────────────────────────────────────────────
+
+describe("formatMinutes()", () => {
+  it("formats morning times zero-padded", () => {
+    assert.equal(formatMinutes(9 * 60 + 2), "09:02");
+  });
+  it("formats afternoon times in 24h", () => {
+    assert.equal(formatMinutes(15 * 60 + 45), "15:45");
+  });
+  it("returns null for null/NaN", () => {
+    assert.equal(formatMinutes(null), null);
+    assert.equal(formatMinutes(NaN), null);
+  });
+});
+
+// ── Unit: haversineMeters ─────────────────────────────────────────────────────
+
+describe("haversineMeters()", () => {
+  it("is ~0 for identical points", () => {
+    assert.equal(haversineMeters(41.5, -72.0, 41.5, -72.0), 0);
+  });
+  it("computes a known short distance within tolerance", () => {
+    // Synthetic home (41.5, -72.0) → synthetic home stop (41.49865, -72.0): ~150m
+    const d = haversineMeters(41.5, -72.0, 41.49865, -72.0);
+    assert.ok(d > 100 && d < 200, `expected ~150m, got ${d}`);
+  });
+  it("returns null when a coordinate is missing", () => {
+    assert.equal(haversineMeters(42.7, -73.8, null, -73.8), null);
+    assert.equal(haversineMeters(42.7, -73.8, 42.7, undefined), null);
+  });
+});
+
+// ── Unit: pickMyStop ──────────────────────────────────────────────────────────
+
+// Synthetic fixture mirroring the /api/student *shape* (all values fabricated):
+// stopsInfo carries the student's own two stops with coordinates; the school
+// stop carries locationName.
+const AM_RUN_FIXTURE = {
+  runId: 719,
+  busNumber: "BUS 012",
+  activeVehicle: "BUS 012",
+  stopsInfo: [
+    { actionType: "Pickup", stopId: 1638, stopDescription: "MAPLE ST @ 3RD AVE", stopAddress: "MAPLE ST", stopCity: "TESTBORO", stopState: "", stopZip: "10001", stopLat: 41.49865, stopLong: -72.0, locationName: "", stopTime: "1900-01-01T09:01:52.277", etaMinutes: 0 },
+    { actionType: "Dropoff", stopId: 21, stopDescription: "PS 42", stopAddress: "1 SCHOOL WAY", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: 41.52, stopLong: -71.96, locationName: "PS 42", stopTime: "1900-01-01T09:10:00", etaMinutes: 0 },
+  ],
+  runDetail: [
+    { runStopSeq: 0, stopId: 3704, stopTime: "1900-01-01T08:49:04.533", directionSeq: 1 },
+    { runStopSeq: 0, stopId: 3704, stopTime: "1900-01-01T08:49:04.533", directionSeq: 2 },
+    { runStopSeq: 1, stopId: 5917, stopTime: "1900-01-01T08:49:59.403", directionSeq: 0 },
+    { runStopSeq: 14, stopId: 1638, stopTime: "1900-01-01T09:01:52.277", directionSeq: 1 },
+    { runStopSeq: 16, stopId: 6024, stopTime: "1900-01-01T09:05:11.007", directionSeq: 5 },
+  ],
+};
+
+const HOME = { latitude: 41.5, longitude: -72.0 };
+
+describe("pickMyStop()", () => {
+  it("picks the home-side stop (nearest to home coords)", () => {
+    const s = pickMyStop(AM_RUN_FIXTURE, HOME, "PS 42");
+    assert.equal(s.stopId, 1638);
+    assert.equal(s.name, "MAPLE ST @ 3RD AVE");
+    assert.equal(s.actionType, "Pickup");
+    assert.equal(s.lat, 41.49865);
+    assert.equal(s.stopTimeMinutes, 9 * 60 + 1);
+  });
+
+  it("falls back to the non-school stop by name when home coords are absent", () => {
+    const s = pickMyStop(AM_RUN_FIXTURE, null, "PS 42");
+    assert.equal(s.stopId, 1638);
+  });
+
+  it("falls back to the Pickup stop when neither home nor school is known", () => {
+    const bare = {
+      stopsInfo: [
+        { actionType: "Dropoff", stopId: 99, stopTime: "1900-01-01T09:10:00" },
+        { actionType: "Pickup", stopId: 88, stopTime: "1900-01-01T08:45:00" },
+      ],
+    };
+    const s = pickMyStop(bare, null, null);
+    assert.equal(s.stopId, 88);
+  });
+
+  it("returns null when the run has no stopsInfo", () => {
+    assert.equal(pickMyStop({ stopsInfo: [] }, HOME, "PS 42"), null);
+    assert.equal(pickMyStop({}, HOME, "PS 42"), null);
+  });
+
+  it("builds a name from stopId when no description/address exists", () => {
+    const s = pickMyStop({ stopsInfo: [{ actionType: "Pickup", stopId: 42 }] }, null, null);
+    assert.equal(s.name, "Stop 42");
+  });
+});
+
+// ── Unit: summarizeRunStops ───────────────────────────────────────────────────
+
+describe("summarizeRunStops()", () => {
+  it("dedupes multi-direction rows down to one entry per runStopSeq, sorted", () => {
+    const { stops, totalStops } = summarizeRunStops(AM_RUN_FIXTURE, 9 * 60);
+    assert.equal(totalStops, 4); // seqs 0,1,14,16
+    assert.deepEqual(stops.map((s) => s.seq), [0, 1, 14, 16]);
+    assert.equal(stops[0].stopId, 3704);
+  });
+
+  it("marks stops done when scheduled time is at/before now", () => {
+    // now = 09:00 → seqs 0 (08:49) and 1 (08:49) done; 14 (09:01) and 16 (09:05) upcoming
+    const { stops } = summarizeRunStops(AM_RUN_FIXTURE, 9 * 60);
+    const bySeq = Object.fromEntries(stops.map((s) => [s.seq, s.done]));
+    assert.equal(bySeq[0], true);
+    assert.equal(bySeq[1], true);
+    assert.equal(bySeq[14], false);
+    assert.equal(bySeq[16], false);
+  });
+
+  it("returns empty for a run without runDetail", () => {
+    assert.deepEqual(summarizeRunStops({}, 600), { stops: [], totalStops: 0 });
+  });
+});
+
+// ── Unit: normalizeStudent stop enrichment ────────────────────────────────────
+
+describe("normalizeStudent() stop enrichment", () => {
+  const student = {
+    uniqueId: 999001,
+    firstName: "Ada",
+    lastName: "Tester",
+    locationName: "PS 42",
+    homeAddress: HOME,
+    runInfo: [AM_RUN_FIXTURE],
+  };
+
+  it("attaches myStop, schedule, totalStops and myStopSeq to the current run", () => {
+    const s = normalizeStudent(student, 9 * 60);
+    assert.equal(s.currentRun.myStop.stopId, 1638);
+    assert.equal(s.currentRun.totalStops, 4);
+    assert.equal(s.currentRun.myStopSeq, 14); // home stop is runStopSeq 14
+    assert.equal(s.currentRun.stopSchedule.length, 4);
+  });
+
+  it("sets myStopSeq null when the stop isn't found in runDetail", () => {
+    const noDetail = { ...student, runInfo: [{ ...AM_RUN_FIXTURE, runDetail: [] }] };
+    const s = normalizeStudent(noDetail, 9 * 60);
+    assert.equal(s.currentRun.myStop.stopId, 1638);
+    assert.equal(s.currentRun.myStopSeq, null);
+    assert.equal(s.currentRun.totalStops, 0);
+  });
+
+  it("tolerates a student with no runInfo (currentRun stays null)", () => {
+    const s = normalizeStudent({ uniqueId: "1", firstName: "A", lastName: "B", runInfo: [] }, 600);
     assert.equal(s.currentRun, null);
   });
 });

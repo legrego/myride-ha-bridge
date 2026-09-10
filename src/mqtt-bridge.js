@@ -16,6 +16,7 @@
  */
 
 const mqtt = require("mqtt");
+const { haversineMeters } = require("./student-tracker");
 
 class MqttBridge {
   /**
@@ -24,10 +25,24 @@ class MqttBridge {
    * @param {string} [opts.username]
    * @param {string} [opts.password]
    * @param {string} [opts.topicPrefix="myride"]
+   * @param {number} [opts.approachRadiusMeters=500] — distance within which the
+   *   "Approaching My Stop" binary sensor turns ON.
    */
-  constructor({ broker, port = 1883, username, password, topicPrefix = "myride" }) {
+  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500 }) {
     this.topicPrefix = topicPrefix;
+    // Guard against NaN/≤0 (e.g. a malformed APPROACH_RADIUS_METERS): an invalid
+    // radius would make `meters <= radius` always false and silently disable the
+    // "approaching" trigger. Fall back to the documented 500 m default.
+    this.approachRadiusMeters =
+      Number.isFinite(approachRadiusMeters) && approachRadiusMeters > 0
+        ? approachRadiusMeters
+        : 500;
     this.discoveredStudents = new Set();
+    // studentId → last published "run|bus|stop" key, so we can clear stale
+    // distance/ETA/approaching when any of them changes or disappears. Keying on
+    // stopId alone is insufficient: the home stop shares one stopId across the AM
+    // and PM runs, so only the run/active-vehicle change marks the transition.
+    this.lastStopKeyByStudent = new Map();
 
 
 
@@ -198,9 +213,21 @@ class MqttBridge {
    */
   publishStudent(student) {
     const { uniqueId, firstName, lastName, currentRun, todaysRuns } = student;
-    if (!uniqueId || !currentRun) return;
+    if (!uniqueId) return;
 
     const studentId = this._sanitizeId(uniqueId);
+
+    // No run today (e.g. runInfo empty on a non-school day): normalizeStudent
+    // returns currentRun=null. Clear any retained stop/progress state so HA
+    // doesn't keep showing a previous day's stop or a stale "approaching=ON".
+    if (!currentRun) {
+      if (this.discoveredStudents.has(studentId)) {
+        this.client.publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "unknown", { retain: true });
+        this._clearStopProgress(studentId);
+      }
+      this.lastStopKeyByStudent.delete(studentId);
+      return;
+    }
     const displayName = `${firstName} ${lastName}`.trim() || uniqueId;
     const stateTopic = `${this.topicPrefix}/student/${studentId}/state`;
     const attributesTopic = `${this.topicPrefix}/student/${studentId}/attributes`;
@@ -210,6 +237,11 @@ class MqttBridge {
     const speedTopic = `${this.topicPrefix}/student/${studentId}/speed`;
     const headingTopic = `${this.topicPrefix}/student/${studentId}/heading`;
     const movingTopic = `${this.topicPrefix}/student/${studentId}/moving`;
+    const myStopTopic = `${this.topicPrefix}/student/${studentId}/my_stop`;
+    const myStopAttributesTopic = `${this.topicPrefix}/student/${studentId}/my_stop_attributes`;
+    const distanceTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
+    const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
+    const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -323,6 +355,71 @@ class MqttBridge {
         { retain: true }
       );
 
+      // My Stop sensor (the student's own stop; attributes carry the schedule)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_my_stop/config`,
+        JSON.stringify({
+          name: `${displayName} My Stop`,
+          unique_id: `myride_student_${studentId}_my_stop`,
+          state_topic: myStopTopic,
+          json_attributes_topic: myStopAttributesTopic,
+          availability,
+          device: deviceConfig,
+          icon: "mdi:map-marker",
+        }),
+        { retain: true }
+      );
+
+      // Distance to my stop (meters)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_distance_to_stop/config`,
+        JSON.stringify({
+          name: `${displayName} Distance to Stop`,
+          unique_id: `myride_student_${studentId}_distance_to_stop`,
+          state_topic: distanceTopic,
+          unit_of_measurement: "m",
+          device_class: "distance",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:map-marker-distance",
+        }),
+        { retain: true }
+      );
+
+      // ETA to my stop (minutes)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_eta/config`,
+        JSON.stringify({
+          name: `${displayName} ETA to Stop`,
+          unique_id: `myride_student_${studentId}_eta`,
+          state_topic: etaTopic,
+          unit_of_measurement: "min",
+          device_class: "duration",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:clock-outline",
+        }),
+        { retain: true }
+      );
+
+      // Approaching my stop (the automation trigger)
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_approaching/config`,
+        JSON.stringify({
+          name: `${displayName} Approaching Stop`,
+          unique_id: `myride_student_${studentId}_approaching`,
+          state_topic: approachingTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-marker",
+        }),
+        { retain: true }
+      );
+
       console.log(`[MQTT] Published HA discovery for student ${displayName}`);
     }
 
@@ -354,6 +451,37 @@ class MqttBridge {
       currentRun.isSubstitute ? "ON" : "OFF",
       { retain: true }
     );
+
+    // My stop: name as state, schedule + position in run as attributes.
+    const myStop = currentRun.myStop || null;
+    this.client.publish(myStopTopic, (myStop && myStop.name) || "unknown", { retain: true });
+    this.client.publish(
+      myStopAttributesTopic,
+      JSON.stringify({
+        stop_id: myStop ? myStop.stopId : null,
+        address: myStop ? myStop.address : null,
+        action: myStop ? myStop.actionType : null, // Pickup (AM) / Dropoff (PM)
+        scheduled_time: myStop ? myStop.stopTime : null,
+        latitude: myStop ? myStop.lat : null,
+        longitude: myStop ? myStop.lng : null,
+        stop_number: currentRun.myStopSeq == null ? null : currentRun.myStopSeq + 1,
+        total_stops: currentRun.totalStops || null,
+        schedule: currentRun.stopSchedule || [],
+      }),
+      { retain: true }
+    );
+
+    // Clear stale live-progress topics when the run, active vehicle, or stop
+    // changes (e.g. the poll switched from the AM to the PM run — which share a
+    // stop id but differ in run/bus), or when there is no stop. Otherwise the
+    // retained distance/ETA/approaching values from the previous bus linger until
+    // the next matching location — indefinitely if the new run has no active bus
+    // yet. Fresh values are republished by publishStudentLocation().
+    const curKey = `${currentRun.runId}|${currentRun.activeVehicle}|${myStop ? myStop.stopId : "none"}`;
+    if (curKey !== this.lastStopKeyByStudent.get(studentId)) {
+      this._clearStopProgress(studentId);
+      this.lastStopKeyByStudent.set(studentId, curKey);
+    }
   }
 
   /**
@@ -401,6 +529,64 @@ class MqttBridge {
       isMoving ? "ON" : "OFF",
       { retain: true }
     );
+
+    // Stop tracking: distance / ETA / approaching, keyed off the student's own
+    // stop. GPS-derived from the live bus position and the authoritative stop
+    // pin, so it updates on every location event (not just each 15-min poll).
+    this._publishStopProgress(studentId, currentRun.myStop, latitude, longitude, speed);
+  }
+
+  /**
+   * Blank the live-progress topics (distance/ETA empty, approaching OFF) so no
+   * stale value from a previous stop lingers. Used when the stop is unknown or
+   * when the student's stop identity changes.
+   *
+   * @param {string} studentId — sanitized id
+   */
+  _clearStopProgress(studentId) {
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/distance_to_stop`, "", { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/eta`, "", { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/approaching`, "OFF", { retain: true });
+  }
+
+  /**
+   * Compute and publish distance/ETA/approaching for a student's own stop.
+   * No-op when the stop has no coordinates.
+   *
+   * @param {string} studentId — sanitized id
+   * @param {object|null} myStop — normalized stop ({lat, lng, ...})
+   * @param {number} busLat
+   * @param {number} busLng
+   * @param {number} speedMph — current bus speed
+   */
+  _publishStopProgress(studentId, myStop, busLat, busLng, speedMph) {
+    const distTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
+    const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
+    const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
+
+    if (!myStop || !Number.isFinite(myStop.lat) || !Number.isFinite(myStop.lng)) {
+      // Unknown stop position — publish empty states rather than stale numbers.
+      this._clearStopProgress(studentId);
+      return;
+    }
+
+    const meters = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
+    if (meters == null) return;
+
+    this.client.publish(distTopic, String(Math.round(meters)), { retain: true });
+
+    // ETA estimate: distance / current speed. Only meaningful while moving;
+    // when stopped we leave ETA blank rather than emit Infinity.
+    if (speedMph > 0) {
+      const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
+      const etaMin = Math.round(meters / metersPerMin);
+      this.client.publish(etaTopic, String(etaMin), { retain: true });
+    } else {
+      this.client.publish(etaTopic, "", { retain: true });
+    }
+
+    const approaching = meters <= this.approachRadiusMeters;
+    this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
   }
 
   async disconnect() {

@@ -23,21 +23,36 @@ const FAKE_BUSES = [
   { id: "BUS 099", lat: 40.7168, lng: -74.0110, heading: 90,  speed: 14 },
 ];
 
+// Home stop sits inside the fake buses' wander area so distance/approaching
+// sensors visibly change in sim. School is a bit further off.
+const HOME_STOP = { stopId: 1638, desc: "MAPLE ST @ 3RD AVE", lat: 40.713, lng: -74.007 };
+const SCHOOL_STOP = { stopId: 21, desc: "PS 42", locationName: "PS 42", lat: 40.72, lng: -74.0 };
+
 // Fake student: normally rides BUS 042 (AM), today BUS 099 is substituting.
 // PM run uses BUS 042 as usual. Mirrors the real Lucas/bus-57 scenario.
+// stopsInfo/runDetail mirror the real /api/student shape so the stop-tracking
+// entities (my_stop, distance_to_stop, eta, approaching) have data to work with.
 const FAKE_STUDENTS = [
   {
     uniqueId: "sim_001",
     firstName: "Lucas",
     lastName: "Sim",
+    locationName: SCHOOL_STOP.locationName,
+    homeAddress: { latitude: 40.7132, longitude: -74.0072 },
     runInfo: [
       {
         runId: 1,
         busNumber: "BUS 042",
         activeVehicle: "BUS 099",  // substitute today
         stopsInfo: [
-          { stopTime: "1900-01-01T08:45:00", actionType: "Pickup" },
-          { stopTime: "1900-01-01T09:10:00", actionType: "Dropoff" },
+          { stopTime: "1900-01-01T08:45:00", actionType: "Pickup", stopId: HOME_STOP.stopId, stopDescription: HOME_STOP.desc, stopAddress: "MAPLE ST", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: HOME_STOP.lat, stopLong: HOME_STOP.lng, locationName: "" },
+          { stopTime: "1900-01-01T09:10:00", actionType: "Dropoff", stopId: SCHOOL_STOP.stopId, stopDescription: SCHOOL_STOP.desc, stopAddress: "1 SCHOOL WAY", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: SCHOOL_STOP.lat, stopLong: SCHOOL_STOP.lng, locationName: SCHOOL_STOP.locationName },
+        ],
+        runDetail: [
+          { runStopSeq: 0, stopId: 9001, stopTime: "1900-01-01T08:40:00", directionSeq: 0 },
+          { runStopSeq: 1, stopId: 9002, stopTime: "1900-01-01T08:43:00", directionSeq: 0 },
+          { runStopSeq: 2, stopId: HOME_STOP.stopId, stopTime: "1900-01-01T08:45:00", directionSeq: 0 },
+          { runStopSeq: 3, stopId: SCHOOL_STOP.stopId, stopTime: "1900-01-01T09:10:00", directionSeq: 0 },
         ],
       },
       {
@@ -45,8 +60,13 @@ const FAKE_STUDENTS = [
         busNumber: "BUS 042",
         activeVehicle: "BUS 042",  // no substitute for PM
         stopsInfo: [
-          { stopTime: "1900-01-01T15:15:00", actionType: "Pickup" },
-          { stopTime: "1900-01-01T15:45:00", actionType: "Dropoff" },
+          { stopTime: "1900-01-01T15:15:00", actionType: "Pickup", stopId: SCHOOL_STOP.stopId, stopDescription: SCHOOL_STOP.desc, stopAddress: "1 SCHOOL WAY", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: SCHOOL_STOP.lat, stopLong: SCHOOL_STOP.lng, locationName: SCHOOL_STOP.locationName },
+          { stopTime: "1900-01-01T15:45:00", actionType: "Dropoff", stopId: HOME_STOP.stopId, stopDescription: HOME_STOP.desc, stopAddress: "MAPLE ST", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: HOME_STOP.lat, stopLong: HOME_STOP.lng, locationName: "" },
+        ],
+        runDetail: [
+          { runStopSeq: 0, stopId: SCHOOL_STOP.stopId, stopTime: "1900-01-01T15:15:00", directionSeq: 0 },
+          { runStopSeq: 1, stopId: 9003, stopTime: "1900-01-01T15:30:00", directionSeq: 0 },
+          { runStopSeq: 2, stopId: HOME_STOP.stopId, stopTime: "1900-01-01T15:45:00", directionSeq: 0 },
         ],
       },
     ],
