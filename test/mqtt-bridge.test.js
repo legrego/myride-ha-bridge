@@ -519,6 +519,32 @@ describe("MqttBridge", () => {
       assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "");
       assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
     });
+
+    it("clears progress at the AM→PM transition even though the stop id is unchanged", () => {
+      // AM run: same home stop id, nearby & moving → approaching ON.
+      bridge.publishStudent(makeStudent());
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(), near);
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "ON");
+
+      // PM run: same stopId (1638) but different runId + active vehicle.
+      const pm = makeStudent();
+      pm.currentRun = { ...pm.currentRun, runId: 794, activeVehicle: "BUS 057" };
+      publishCalls.length = 0;
+      bridge.publishStudent(pm);
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("clears progress and marks the stop unknown when there is no current run", () => {
+      bridge.publishStudent(makeStudent());
+      bridge.publishStudentLocation(makeStudent(), near); // approaching ON, retained
+      publishCalls.length = 0;
+      bridge.publishStudent({ uniqueId: "2008416", currentRun: null }); // no-school day
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop")[1], "unknown");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
   });
 
   describe("disconnect()", () => {

@@ -38,9 +38,11 @@ class MqttBridge {
         ? approachRadiusMeters
         : 500;
     this.discoveredStudents = new Set();
-    // studentId → last published myStop.stopId, so we can clear stale distance/
-    // ETA/approaching when the student's stop changes (e.g. AM→PM) or disappears.
-    this.lastStopByStudent = new Map();
+    // studentId → last published "run|bus|stop" key, so we can clear stale
+    // distance/ETA/approaching when any of them changes or disappears. Keying on
+    // stopId alone is insufficient: the home stop shares one stopId across the AM
+    // and PM runs, so only the run/active-vehicle change marks the transition.
+    this.lastStopKeyByStudent = new Map();
 
 
 
@@ -211,9 +213,21 @@ class MqttBridge {
    */
   publishStudent(student) {
     const { uniqueId, firstName, lastName, currentRun, todaysRuns } = student;
-    if (!uniqueId || !currentRun) return;
+    if (!uniqueId) return;
 
     const studentId = this._sanitizeId(uniqueId);
+
+    // No run today (e.g. runInfo empty on a non-school day): normalizeStudent
+    // returns currentRun=null. Clear any retained stop/progress state so HA
+    // doesn't keep showing a previous day's stop or a stale "approaching=ON".
+    if (!currentRun) {
+      if (this.discoveredStudents.has(studentId)) {
+        this.client.publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "unknown", { retain: true });
+        this._clearStopProgress(studentId);
+      }
+      this.lastStopKeyByStudent.delete(studentId);
+      return;
+    }
     const displayName = `${firstName} ${lastName}`.trim() || uniqueId;
     const stateTopic = `${this.topicPrefix}/student/${studentId}/state`;
     const attributesTopic = `${this.topicPrefix}/student/${studentId}/attributes`;
@@ -457,15 +471,16 @@ class MqttBridge {
       { retain: true }
     );
 
-    // Clear stale live-progress topics when the student's stop changes (e.g. the
-    // poll switched from the AM to the PM run) or when there is no stop. Otherwise
-    // the retained distance/ETA/approaching values from the previous stop linger
-    // until the next matching bus location — indefinitely if the new run has no
-    // active bus. Fresh values are republished by publishStudentLocation().
-    const curStopId = myStop ? myStop.stopId : null;
-    if (curStopId !== this.lastStopByStudent.get(studentId)) {
+    // Clear stale live-progress topics when the run, active vehicle, or stop
+    // changes (e.g. the poll switched from the AM to the PM run — which share a
+    // stop id but differ in run/bus), or when there is no stop. Otherwise the
+    // retained distance/ETA/approaching values from the previous bus linger until
+    // the next matching location — indefinitely if the new run has no active bus
+    // yet. Fresh values are republished by publishStudentLocation().
+    const curKey = `${currentRun.runId}|${currentRun.activeVehicle}|${myStop ? myStop.stopId : "none"}`;
+    if (curKey !== this.lastStopKeyByStudent.get(studentId)) {
       this._clearStopProgress(studentId);
-      this.lastStopByStudent.set(studentId, curStopId);
+      this.lastStopKeyByStudent.set(studentId, curKey);
     }
   }
 
