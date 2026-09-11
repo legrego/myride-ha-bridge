@@ -403,6 +403,12 @@ class MqttBridge {
           unique_id: `myride_student_${studentId}_distance_to_stop`,
           state_topic: distanceTopic,
           unit_of_measurement: "m",
+          // Pin the display unit to meters. Without this, HA's imperial unit
+          // system auto-converts a "distance" sensor to feet in the registry
+          // (suggested_unit_of_measurement), which breaks downstream math that
+          // assumes meters. Only affects fresh installs; existing entities keep
+          // whatever unit is already stamped in their registry override.
+          suggested_unit_of_measurement: "m",
           device_class: "distance",
           state_class: "measurement",
           availability,
