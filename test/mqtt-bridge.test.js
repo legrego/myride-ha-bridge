@@ -547,6 +547,144 @@ describe("MqttBridge", () => {
     });
   });
 
+  describe("route-aware distance & ETA", () => {
+    // Route runs due north along -72.0; legs are 1000 m each (hand-set cumulative,
+    // independent of the haversine leg lengths so the assertions are exact). The
+    // stop pin sits at the last vertex → cumulativeAtStopMeters = 3000. All fabricated.
+    const routePolyline = [
+      [41.50, -72.0],
+      [41.51, -72.0],
+      [41.52, -72.0],
+      [41.53, -72.0],
+    ];
+    const cumulativeMeters = [0, 1000, 2000, 3000];
+    const routeStop = {
+      stopId: 1638,
+      name: "MAPLE ST @ 3RD AVE",
+      lat: 41.53,
+      lng: -72.0,
+      actionType: "Pickup",
+      stopTime: "1900-01-01T09:01:00",
+      stopTimeMinutes: 541,
+      routePolyline,
+      cumulativeMeters,
+      cumulativeAtStopMeters: 3000,
+    };
+    const plainStop = {
+      stopId: 1638, name: "MAPLE ST @ 3RD AVE", lat: 41.53, lng: -72.0,
+      actionType: "Pickup", stopTime: "1900-01-01T09:01:00", stopTimeMinutes: 541,
+    };
+    const makeStudent = (stop) => ({
+      uniqueId: "2008416",
+      firstName: "Lucas",
+      lastName: "Gregory",
+      currentRun: {
+        runId: 719, busNumber: "BUS 012", activeVehicle: "BUS 012",
+        isSubstitute: false, myStop: stop, myStopSeq: 2, totalStops: 3,
+        stopSchedule: [],
+      },
+      todaysRuns: [],
+    });
+    const at = (lat, lng, overrides = {}) => ({
+      assetUniqueId: "BUS 012", latitude: lat, longitude: lng,
+      heading: 0, speed: 20, logTime: "2026-09-11T13:01:00Z", ...overrides,
+    });
+
+    beforeEach(() => {
+      bridge.discoveredStudents.clear();
+    });
+
+    describe("_routeDistanceMeters()", () => {
+      it("returns cumulativeAtStop − cumulativeAtBus for a mid-route bus", () => {
+        // Bus on vertex idx1 (cum 1000) → remaining 3000 − 1000 = 2000.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), 2000);
+      });
+
+      it("clamps remaining at 0 when the bus is at/after the stop vertex", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+      });
+
+      it("returns null when route geometry is missing", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", plainStop, 41.51, -72.0), null);
+      });
+
+      it("returns null when the bus is off-route (snap beyond threshold)", () => {
+        // ~0.02° longitude east (~1.6 km) — well past the 150 m snap cutoff.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98), null);
+      });
+
+      it("rejects a backward jump via the monotonic guard, keeping the baseline", () => {
+        // Accept a forward reading at vertex idx2 (cum 2000).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.52, -72.0), 1000);
+        // A jump back to idx0 (cum 0) is > 50 m backward → rejected (null).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), null);
+        // Baseline preserved: a forward reading is still accepted afterward.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+      });
+
+      it("tracks the guard per student id", () => {
+        bridge._routeDistanceMeters("a", routeStop, 41.52, -72.0); // a → 2000
+        // Student b has no baseline, so an early-route reading is accepted.
+        assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0), 3000);
+      });
+    });
+
+    it("publishes route distance (not haversine) for distance_to_stop and eta", () => {
+      bridge.publishStudent(makeStudent(routeStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0));
+
+      // Route remaining is exactly 2000; crow-flies to the pin (0.02°) is ~2224 m.
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.equal(dist, 2000);
+      // ETA = 2000 m ÷ (20 mph × 26.8224) ≈ 3.7 → 4 min.
+      const eta = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1]);
+      assert.equal(eta, 4);
+    });
+
+    it("falls back to haversine distance when the stop has no route geometry", () => {
+      bridge.publishStudent(makeStudent(plainStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(plainStop), at(41.51, -72.0));
+
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      // Crow-flies over 0.02° latitude ≈ 2224 m — clearly not the 2000 m route value.
+      assert.ok(dist > 2200 && dist < 2250, `expected ~2224m haversine, got ${dist}`);
+    });
+
+    it("falls back to haversine when the bus is off-route", () => {
+      bridge.publishStudent(makeStudent(routeStop));
+      publishCalls.length = 0;
+      // Off-route east: route snap exceeds 150 m → haversine to the pin instead.
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98));
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.ok(dist > 2000, `expected haversine (>2000m), got ${dist}`);
+    });
+
+    it("keeps approaching on haversine even when route distance is within the radius", () => {
+      // Route says 400 m remaining (< 500 m radius) but the bus is physically
+      // ~2224 m from the pin → approaching must be OFF (driven by haversine).
+      const shortRouteStop = { ...routeStop, cumulativeAtStopMeters: 1400 };
+      bridge.publishStudent(makeStudent(shortRouteStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(shortRouteStop), at(41.51, -72.0));
+
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.equal(dist, 400); // route distance used for the sensor
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("resets the monotonic guard when stop progress is cleared", () => {
+      bridge.publishStudent(makeStudent(routeStop));
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.52, -72.0)); // baseline 2000
+      // A stop-identity change clears progress (and the route baseline).
+      const moved = makeStudent(routeStop);
+      moved.currentRun = { ...moved.currentRun, runId: 800, activeVehicle: "BUS 057" };
+      bridge.publishStudent(moved);
+      assert.equal(bridge.lastRouteCumByStudent.has("2008416"), false);
+    });
+  });
+
   describe("disconnect()", () => {
     it("publishes offline status and ends client", async () => {
       publishCalls.length = 0;

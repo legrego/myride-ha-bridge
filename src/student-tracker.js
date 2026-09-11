@@ -97,6 +97,139 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 }
 
 /**
+ * Parse a WKT LINESTRING into an array of [lat, lng] vertices.
+ *
+ * WKT stores coordinates in **lng lat** order (X = longitude, Y = latitude), so
+ * each pair is swapped to the [lat, lng] convention used everywhere else here.
+ * Returns null for anything that isn't a parseable LINESTRING with ≥1 vertex.
+ *
+ * @param {string} wkt — e.g. "LINESTRING (-72.0 41.5, -72.01 41.51)"
+ * @returns {Array<[number, number]>|null}
+ */
+function parseLineString(wkt) {
+  if (typeof wkt !== "string") return null;
+  const m = wkt.match(/LINESTRING\s*\(([^)]*)\)/i);
+  if (!m) return null;
+  const points = [];
+  for (const pair of m[1].split(",")) {
+    const nums = pair.trim().split(/\s+/).map(Number);
+    if (nums.length < 2 || !Number.isFinite(nums[0]) || !Number.isFinite(nums[1])) continue;
+    points.push([nums[1], nums[0]]); // WKT is lng lat → [lat, lng]
+  }
+  return points.length > 0 ? points : null;
+}
+
+/**
+ * Concatenate a run's ordered `runDetail[].directionGeomLine` WKT segments into a
+ * single [lat, lng] polyline in travel order, dropping the duplicate vertex where
+ * one segment's end coincides with the next segment's start.
+ *
+ * `runDetail` is already ordered in travel order (ascending runStopSeq, then
+ * directionSeq), so we walk it as-is. Rows with missing/unparseable geometry are
+ * skipped. Returns [] when no geometry is present.
+ *
+ * @param {Array} runDetail
+ * @returns {Array<[number, number]>}
+ */
+function buildRoutePolyline(runDetail) {
+  const detail = Array.isArray(runDetail) ? runDetail : [];
+  const polyline = [];
+  for (const row of detail) {
+    if (!row) continue;
+    const seg = parseLineString(row.directionGeomLine);
+    if (!seg) continue;
+    for (const pt of seg) {
+      const last = polyline[polyline.length - 1];
+      if (last && last[0] === pt[0] && last[1] === pt[1]) continue; // drop join dup
+      polyline.push(pt);
+    }
+  }
+  return polyline;
+}
+
+/**
+ * Cumulative road distance (meters from the polyline start) at each vertex.
+ * `out[0]` is always 0; `out[i]` sums the haversine leg lengths up to vertex i.
+ *
+ * @param {Array<[number, number]>} polyline
+ * @returns {number[]}
+ */
+function cumulativeMetersAlong(polyline) {
+  const cumulative = [];
+  let total = 0;
+  for (let i = 0; i < polyline.length; i++) {
+    if (i > 0) {
+      const leg = haversineMeters(
+        polyline[i - 1][0], polyline[i - 1][1], polyline[i][0], polyline[i][1]
+      );
+      total += leg != null ? leg : 0;
+    }
+    cumulative.push(total);
+  }
+  return cumulative;
+}
+
+/**
+ * Snap a point to the nearest polyline **vertex** and read that vertex's
+ * cumulative road distance from the route start.
+ *
+ * Deliberately vertex-granular (not full point-to-segment projection): the
+ * LINESTRINGs are dense enough (tens of meters between vertices) for a
+ * neighborhood-scale ETA, and it needs far less code.
+ *
+ * @param {number} lat
+ * @param {number} lng
+ * @param {Array<[number, number]>} polyline
+ * @param {number[]} cumulative — from cumulativeMetersAlong(polyline)
+ * @returns {{cumulativeMeters: number, distMeters: number}|null} — `distMeters`
+ *   is the snap distance (how far the point sits off the route)
+ */
+function nearestVertexCumulative(lat, lng, polyline, cumulative) {
+  if (!Array.isArray(polyline) || polyline.length === 0) return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  let bestDist = Infinity;
+  let bestCum = null;
+  for (let i = 0; i < polyline.length; i++) {
+    const d = haversineMeters(lat, lng, polyline[i][0], polyline[i][1]);
+    if (d != null && d < bestDist) {
+      bestDist = d;
+      bestCum = cumulative[i];
+    }
+  }
+  if (bestCum == null) return null;
+  return { cumulativeMeters: bestCum, distMeters: bestDist };
+}
+
+/**
+ * Attach route geometry to a normalized `myStop` so the publisher can compute
+ * road-following (rather than crow-flies) distance to the stop.
+ *
+ * Adds three fields to `myStop` (kept in memory only — never published to MQTT):
+ *   - `routePolyline`         — [lat,lng] vertices of the whole run, in travel order
+ *   - `cumulativeMeters`      — per-vertex cumulative distance from the run start
+ *   - `cumulativeAtStopMeters`— cumulative distance at the vertex nearest the stop pin
+ *
+ * The remaining road distance to the stop is then
+ * `cumulativeAtStopMeters − cumulativeAtBus`, where the bus is snapped live. When
+ * geometry is missing/unparseable (or the stop lacks coordinates), the fields are
+ * left unset and the publisher falls back to haversine.
+ *
+ * @param {object} run — raw run carrying `runDetail`
+ * @param {object|null} myStop — normalized stop (mutated in place)
+ */
+function attachRouteGeometry(run, myStop) {
+  if (!myStop || !Number.isFinite(myStop.lat) || !Number.isFinite(myStop.lng)) return;
+  const polyline = buildRoutePolyline(run && run.runDetail);
+  if (polyline.length < 2) return; // need at least one leg for cumulative distance
+  const cumulative = cumulativeMetersAlong(polyline);
+  const stopSnap = nearestVertexCumulative(myStop.lat, myStop.lng, polyline, cumulative);
+  if (!stopSnap) return;
+  myStop.routePolyline = polyline;
+  myStop.cumulativeMeters = cumulative;
+  myStop.cumulativeAtStopMeters = stopSnap.cumulativeMeters;
+}
+
+/**
  * Build a normalized "my stop" descriptor for one run.
  *
  * MyRide's `stopsInfo` contains ONLY this student's own stops (their Pickup and
@@ -277,6 +410,10 @@ function normalizeStudent(student, nowMinutes) {
   // *raw* current run (todaysRuns entries don't carry runDetail).
   if (currentRun && currentRunRaw) {
     const myStop = pickMyStop(currentRunRaw, homeAddress, locationName);
+    // Enrich myStop with the run's route polyline + cumulative distances so the
+    // publisher can compute road-following distance/ETA (falls back to haversine
+    // when geometry is missing). In-memory only; not published to MQTT.
+    attachRouteGeometry(currentRunRaw, myStop);
     const { stops, totalStops } = summarizeRunStops(currentRunRaw, nowMinutes);
     const myStopSeq =
       myStop && myStop.stopId != null
@@ -409,6 +546,11 @@ module.exports = {
   stopTimeToMinutes,
   formatMinutes,
   haversineMeters,
+  parseLineString,
+  buildRoutePolyline,
+  cumulativeMetersAlong,
+  nearestVertexCumulative,
+  attachRouteGeometry,
   pickMyStop,
   summarizeRunStops,
   nowMinutesInTimeZone,

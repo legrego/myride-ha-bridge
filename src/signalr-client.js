@@ -37,6 +37,14 @@
  *     distanceToStartPoint: number | null,
  *     distanceToEndPoint: number | null
  *   }
+ *
+ *   IMPORTANT — the route-progress fields are present in the schema but NULL/0 in
+ *   practice. A live capture during an active run (2026-09-11) showed every frame
+ *   carrying only latitude/longitude/heading/speed/logTime/assetUniqueId; every
+ *   one of visibleRunName, closestDirectionId, distanceToClosestDirection,
+ *   distanceToStartPoint and distanceToEndPoint was null/0. So there is no
+ *   server-provided route distance or ETA — road-aware distance is computed
+ *   locally from the route geometry in /api/student (see student-tracker.js).
  */
 
 const signalR = require("@microsoft/signalr");

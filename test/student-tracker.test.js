@@ -7,6 +7,10 @@ const {
   stopTimeToMinutes,
   formatMinutes,
   haversineMeters,
+  parseLineString,
+  buildRoutePolyline,
+  cumulativeMetersAlong,
+  nearestVertexCumulative,
   pickMyStop,
   summarizeRunStops,
   nowMinutesInTimeZone,
@@ -367,6 +371,143 @@ describe("normalizeStudent() stop enrichment", () => {
   it("tolerates a student with no runInfo (currentRun stays null)", () => {
     const s = normalizeStudent({ uniqueId: "1", firstName: "A", lastName: "B", runInfo: [] }, 600);
     assert.equal(s.currentRun, null);
+  });
+});
+
+// ── Unit: route geometry (WKT parse, polyline, cumulative, vertex snap) ────────
+
+// A synthetic run whose route runs due north along the -72.0 meridian; each leg
+// is 0.01° of latitude (~1112 m). All coordinates fabricated.
+const ROUTE_RUN = {
+  runId: 900,
+  busNumber: "BUS 012",
+  activeVehicle: "BUS 012",
+  stopsInfo: [
+    { actionType: "Pickup", stopId: 1638, stopDescription: "MAPLE ST @ 3RD AVE", stopLat: 41.53, stopLong: -72.0, locationName: "", stopTime: "1900-01-01T09:01:00" },
+    { actionType: "Dropoff", stopId: 21, stopDescription: "PS 42", stopLat: 41.60, stopLong: -71.9, locationName: "PS 42", stopTime: "1900-01-01T09:20:00" },
+  ],
+  runDetail: [
+    { runStopSeq: 0, stopId: 3704, stopTime: "1900-01-01T08:50:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.50, -72.0 41.51)" },
+    { runStopSeq: 1, stopId: 5917, stopTime: "1900-01-01T08:55:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.51, -72.0 41.52)" },
+    { runStopSeq: 2, stopId: 1638, stopTime: "1900-01-01T09:01:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.52, -72.0 41.53)" },
+  ],
+};
+
+describe("parseLineString()", () => {
+  it("parses vertices and swaps WKT lng-lat into [lat, lng]", () => {
+    const pts = parseLineString("LINESTRING (-72.0 41.5, -71.99 41.51)");
+    assert.deepEqual(pts, [[41.5, -72.0], [41.51, -71.99]]);
+  });
+
+  it("tolerates no space after LINESTRING and extra whitespace", () => {
+    const pts = parseLineString("LINESTRING(-72.0 41.5,  -71.99 41.51 )");
+    assert.deepEqual(pts, [[41.5, -72.0], [41.51, -71.99]]);
+  });
+
+  it("returns null for non-strings and non-LINESTRING input", () => {
+    assert.equal(parseLineString(null), null);
+    assert.equal(parseLineString(42), null);
+    assert.equal(parseLineString("POINT (-72 41)"), null);
+  });
+
+  it("returns null when no vertex is parseable", () => {
+    assert.equal(parseLineString("LINESTRING (foo bar)"), null);
+  });
+});
+
+describe("buildRoutePolyline()", () => {
+  it("concatenates segments in order, dropping duplicate join vertices", () => {
+    const poly = buildRoutePolyline(ROUTE_RUN.runDetail);
+    assert.deepEqual(poly, [
+      [41.50, -72.0],
+      [41.51, -72.0],
+      [41.52, -72.0],
+      [41.53, -72.0],
+    ]);
+  });
+
+  it("skips rows with missing/unparseable geometry", () => {
+    const poly = buildRoutePolyline([
+      { directionGeomLine: "LINESTRING (-72.0 41.50, -72.0 41.51)" },
+      { directionGeomLine: null },
+      { /* no directionGeomLine */ },
+      { directionGeomLine: "LINESTRING (-72.0 41.51, -72.0 41.52)" },
+    ]);
+    assert.deepEqual(poly, [[41.50, -72.0], [41.51, -72.0], [41.52, -72.0]]);
+  });
+
+  it("returns [] when no geometry is present", () => {
+    assert.deepEqual(buildRoutePolyline([{ stopId: 1 }, {}]), []);
+    assert.deepEqual(buildRoutePolyline(null), []);
+  });
+});
+
+describe("cumulativeMetersAlong()", () => {
+  it("starts at 0 and accumulates each leg length", () => {
+    const poly = buildRoutePolyline(ROUTE_RUN.runDetail);
+    const cum = cumulativeMetersAlong(poly);
+    assert.equal(cum.length, 4);
+    assert.equal(cum[0], 0);
+    // Each 0.01° latitude leg is ~1112 m; cumulative is strictly increasing.
+    assert.ok(cum[1] > 1000 && cum[1] < 1200, `leg1 ~1112m, got ${cum[1]}`);
+    assert.ok(cum[2] > cum[1] && cum[3] > cum[2]);
+    assert.ok(cum[3] > 3200 && cum[3] < 3400, `total ~3336m, got ${cum[3]}`);
+  });
+});
+
+describe("nearestVertexCumulative()", () => {
+  const poly = buildRoutePolyline(ROUTE_RUN.runDetail);
+  const cum = cumulativeMetersAlong(poly);
+
+  it("snaps an on-vertex point to that vertex's cumulative distance", () => {
+    const r = nearestVertexCumulative(41.52, -72.0, poly, cum);
+    assert.equal(r.cumulativeMeters, cum[2]);
+    assert.ok(r.distMeters < 1, `expected ~0m snap, got ${r.distMeters}`);
+  });
+
+  it("reports the snap distance for an off-route point", () => {
+    // 0.01° of longitude east of the route (~830 m at this latitude).
+    const r = nearestVertexCumulative(41.50, -71.99, poly, cum);
+    assert.equal(r.cumulativeMeters, cum[0]);
+    assert.ok(r.distMeters > 700 && r.distMeters < 1000, `got ${r.distMeters}`);
+  });
+
+  it("returns null for an empty polyline or non-finite point", () => {
+    assert.equal(nearestVertexCumulative(41.5, -72.0, [], []), null);
+    assert.equal(nearestVertexCumulative(NaN, -72.0, poly, cum), null);
+  });
+});
+
+describe("normalizeStudent() route geometry enrichment", () => {
+  const student = {
+    uniqueId: 900001,
+    firstName: "Ada",
+    lastName: "Router",
+    locationName: "PS 42",
+    homeAddress: { latitude: 41.53, longitude: -72.0 }, // nearest the home stop (1638)
+    runInfo: [ROUTE_RUN],
+  };
+
+  it("attaches routePolyline, cumulativeMeters and cumulativeAtStopMeters to myStop", () => {
+    const s = normalizeStudent(student, 9 * 60);
+    const stop = s.currentRun.myStop;
+    assert.equal(stop.stopId, 1638);
+    assert.equal(stop.routePolyline.length, 4);
+    assert.equal(stop.cumulativeMeters.length, 4);
+    // Home stop pin (41.53) snaps to the last vertex → full route length.
+    assert.equal(stop.cumulativeAtStopMeters, stop.cumulativeMeters[3]);
+  });
+
+  it("leaves route fields unset when the run has no geometry (haversine fallback)", () => {
+    const noGeom = {
+      ...student,
+      runInfo: [{ ...ROUTE_RUN, runDetail: ROUTE_RUN.runDetail.map(({ directionGeomLine, ...r }) => r) }],
+    };
+    const s = normalizeStudent(noGeom, 9 * 60);
+    const stop = s.currentRun.myStop;
+    assert.equal(stop.stopId, 1638);
+    assert.equal(stop.routePolyline, undefined);
+    assert.equal(stop.cumulativeAtStopMeters, undefined);
   });
 });
 
