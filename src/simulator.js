@@ -116,6 +116,17 @@ async function getStudents() {
 
 const TICK_MS = 5000; // emit a location update every 5 s
 
+// bus.speed is mph (that's what we publish/consume), so convert to m/s before
+// moving. Meters-per-degree of latitude is ~constant; longitude degrees shrink
+// by cos(latitude), so divide lng deltas by it to keep movement physical.
+const MPH_TO_MS = 0.44704;
+const METERS_PER_DEG_LAT = 111320;
+
+/** Meters the bus travels in one tick at its current mph. */
+function metersPerTick(bus) {
+  return bus.speed * MPH_TO_MS * (TICK_MS / 1000);
+}
+
 function randomWalk(bus) {
   // Route-following buses advance along their fixed polyline instead of wandering,
   // so the route-aware distance/ETA sensors have coherent geometry to track.
@@ -131,12 +142,13 @@ function randomWalk(bus) {
     bus.speed = Math.max(5, Math.min(45, bus.speed + Math.round(Math.random() * 6 - 3)));
   }
 
-  // Move position based on heading and speed
+  // Move position based on heading and speed (mph → m/s → degrees).
   if (bus.speed > 0) {
     const rad = (bus.heading * Math.PI) / 180;
-    const dist = (bus.speed * TICK_MS) / 1000 / 111320; // degrees per tick
-    bus.lat += dist * Math.cos(rad);
-    bus.lng += dist * Math.sin(rad);
+    const meters = metersPerTick(bus);
+    const cosLat = Math.cos((bus.lat * Math.PI) / 180) || 1;
+    bus.lat += (meters * Math.cos(rad)) / METERS_PER_DEG_LAT;
+    bus.lng += (meters * Math.sin(rad)) / (METERS_PER_DEG_LAT * cosLat);
   }
 
   return {
@@ -157,12 +169,15 @@ function randomWalk(bus) {
 function routeWalk(bus) {
   const route = bus.route;
   const target = route[bus.routeIdx];
-  const dLat = target[0] - bus.lat;
-  const dLng = target[1] - bus.lng;
-  const dist = Math.hypot(dLat, dLng);
-  const step = (bus.speed * TICK_MS) / 1000 / 111320; // degrees per tick
+  // Work in meters (mph → m/s) so speed is physical and lng isn't over-counted at
+  // these latitudes; interpolate the raw degree deltas by the same fraction.
+  const cosLat = Math.cos((bus.lat * Math.PI) / 180) || 1;
+  const dLatM = (target[0] - bus.lat) * METERS_PER_DEG_LAT;
+  const dLngM = (target[1] - bus.lng) * METERS_PER_DEG_LAT * cosLat;
+  const distM = Math.hypot(dLatM, dLngM);
+  const stepM = metersPerTick(bus);
 
-  if (dist <= step || dist === 0) {
+  if (distM <= stepM || distM === 0) {
     // Reached (or overshoot) the waypoint — snap to it and pick the next one.
     bus.lat = target[0];
     bus.lng = target[1];
@@ -170,9 +185,10 @@ function routeWalk(bus) {
     if (bus.routeIdx >= route.length) { bus.routeIdx = route.length - 2; bus.routeDir = -1; }
     else if (bus.routeIdx < 0) { bus.routeIdx = 1; bus.routeDir = 1; }
   } else {
-    bus.lat += (dLat / dist) * step;
-    bus.lng += (dLng / dist) * step;
-    bus.heading = ((Math.atan2(dLng, dLat) * 180) / Math.PI + 360) % 360;
+    const frac = stepM / distM;
+    bus.lat += (target[0] - bus.lat) * frac;
+    bus.lng += (target[1] - bus.lng) * frac;
+    bus.heading = ((Math.atan2(dLngM, dLatM) * 180) / Math.PI + 360) % 360;
   }
 
   return {

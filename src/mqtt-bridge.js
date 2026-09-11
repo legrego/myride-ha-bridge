@@ -24,6 +24,12 @@ const ROUTE_SNAP_MAX_METERS = 150;
 // Allowed backward movement (m) in cumulative route distance between ticks before
 // we reject the reading as a wrong-pass snap on a loop/U-turn (see _routeDistanceMeters).
 const ROUTE_MONOTONIC_TOLERANCE_METERS = 50;
+// Max plausible forward progress (m) in cumulative route distance between two
+// location updates. A nearest-vertex snap landing further ahead than this is
+// treated as a wrong-pass jump (the forward mirror of the backward guard) and
+// rejected → haversine. Sized well above a neighborhood bus's per-update travel
+// (~45 mph × 30 s ≈ 600 m) yet below a typical loop's cumulative separation.
+const ROUTE_FORWARD_WINDOW_METERS = 1000;
 
 class MqttBridge {
   /**
@@ -51,9 +57,9 @@ class MqttBridge {
     // and PM runs, so only the run/active-vehicle change marks the transition.
     this.lastStopKeyByStudent = new Map();
     // studentId → last accepted cumulative route distance of the bus (meters from
-    // the run start). Used by _routeDistanceMeters as a monotonic guard so a loop's
-    // U-turn can't snap the bus to an earlier pass and report a bogus jump. Reset
-    // whenever stop progress is cleared (stop identity change / no run).
+    // the run start). Used by _routeDistanceMeters to reject wrong-pass snaps on a
+    // loop/U-turn — jumps backward to an earlier pass or implausibly far forward to
+    // a later one. Reset whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
@@ -566,7 +572,8 @@ class MqttBridge {
    * Road-following distance (meters) from the live bus to the student's stop,
    * using the precomputed route polyline on `myStop`. Returns null when route
    * geometry is unavailable, the bus is off-route, or the reading fails the
-   * monotonic guard — in every such case the caller falls back to haversine.
+   * wrong-pass guard (implausible backward/forward jump) — in every such case the
+   * caller falls back to haversine.
    *
    * @param {string} studentId — sanitized id (keys the monotonic guard)
    * @param {object} myStop — normalized stop; needs routePolyline, cumulativeMeters,
@@ -595,11 +602,19 @@ class MqttBridge {
 
     const busCum = snap.cumulativeMeters;
 
-    // Monotonic guard: the route can revisit streets (loops/U-turns), so
-    // nearest-vertex can jump backward to the wrong pass. Reject a value that
-    // moves backward beyond tolerance and keep the prior baseline for next tick.
+    // Wrong-pass guard: the route can revisit streets (loops/U-turns), so a global
+    // nearest-vertex snap can land on the wrong pass — an earlier one (jumps
+    // backward) OR a later one (jumps implausibly far forward). Relative to the
+    // last accepted position, reject anything that moves backward beyond tolerance
+    // or forward beyond one update's plausible travel; both fall back to haversine
+    // and keep the prior baseline for the next tick. The first reading (no baseline)
+    // is accepted as the initial acquisition.
     const last = this.lastRouteCumByStudent.get(studentId);
-    if (last != null && busCum < last - ROUTE_MONOTONIC_TOLERANCE_METERS) {
+    if (
+      last != null &&
+      (busCum < last - ROUTE_MONOTONIC_TOLERANCE_METERS ||
+        busCum > last + ROUTE_FORWARD_WINDOW_METERS)
+    ) {
       return null;
     }
     this.lastRouteCumByStudent.set(studentId, busCum);

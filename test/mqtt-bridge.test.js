@@ -622,6 +622,16 @@ describe("MqttBridge", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
       });
 
+      it("rejects an implausible forward jump (wrong later pass of a loop)", () => {
+        // Accept an early reading at vertex idx0 (cum 0).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
+        // A jump to idx3 (cum 3000) is +3000 m — far past one update's plausible
+        // travel (1000 m window) → rejected as a wrong-pass snap.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), null);
+        // Baseline preserved: a within-window forward reading is still accepted.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), 2000);
+      });
+
       it("tracks the guard per student id", () => {
         bridge._routeDistanceMeters("a", routeStop, 41.52, -72.0); // a → 2000
         // Student b has no baseline, so an early-route reading is accepted.
