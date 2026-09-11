@@ -30,6 +30,10 @@ const ROUTE_MONOTONIC_TOLERANCE_METERS = 50;
 // rejected → haversine. Sized well above a neighborhood bus's per-update travel
 // (~45 mph × 30 s ≈ 600 m) yet below a typical loop's cumulative separation.
 const ROUTE_FORWARD_WINDOW_METERS = 1000;
+// After this many consecutive rejected readings, a persistent jump is taken as a
+// genuine re-acquisition (adopt the new position) rather than rejected forever, so
+// route tracking recovers after a long update gap (e.g. a SignalR reconnect).
+const ROUTE_MAX_REJECTS = 3;
 
 class MqttBridge {
   /**
@@ -56,10 +60,12 @@ class MqttBridge {
     // stopId alone is insufficient: the home stop shares one stopId across the AM
     // and PM runs, so only the run/active-vehicle change marks the transition.
     this.lastStopKeyByStudent = new Map();
-    // studentId → last accepted cumulative route distance of the bus (meters from
-    // the run start). Used by _routeDistanceMeters to reject wrong-pass snaps on a
-    // loop/U-turn — jumps backward to an earlier pass or implausibly far forward to
-    // a later one. Reset whenever stop progress is cleared (stop identity change / no run).
+    // studentId → { cum, rejects }: last accepted cumulative route distance of the
+    // bus (meters from the run start) and how many consecutive readings have since
+    // been rejected. Used by _routeDistanceMeters to reject wrong-pass snaps on a
+    // loop/U-turn (backward to an earlier pass, or implausibly far forward to a
+    // later one) while still re-acquiring after a sustained, legitimate gap. Reset
+    // whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
@@ -572,8 +578,9 @@ class MqttBridge {
    * Road-following distance (meters) from the live bus to the student's stop,
    * using the precomputed route polyline on `myStop`. Returns null when route
    * geometry is unavailable, the bus is off-route, or the reading fails the
-   * wrong-pass guard (implausible backward/forward jump) — in every such case the
-   * caller falls back to haversine.
+   * wrong-pass guard (an implausible backward/forward jump that hasn't yet
+   * persisted long enough to re-acquire) — in every such case the caller falls
+   * back to haversine.
    *
    * @param {string} studentId — sanitized id (keys the monotonic guard)
    * @param {object} myStop — normalized stop; needs routePolyline, cumulativeMeters,
@@ -605,19 +612,27 @@ class MqttBridge {
     // Wrong-pass guard: the route can revisit streets (loops/U-turns), so a global
     // nearest-vertex snap can land on the wrong pass — an earlier one (jumps
     // backward) OR a later one (jumps implausibly far forward). Relative to the
-    // last accepted position, reject anything that moves backward beyond tolerance
-    // or forward beyond one update's plausible travel; both fall back to haversine
-    // and keep the prior baseline for the next tick. The first reading (no baseline)
-    // is accepted as the initial acquisition.
-    const last = this.lastRouteCumByStudent.get(studentId);
-    if (
-      last != null &&
-      (busCum < last - ROUTE_MONOTONIC_TOLERANCE_METERS ||
-        busCum > last + ROUTE_FORWARD_WINDOW_METERS)
-    ) {
-      return null;
+    // last accepted position, an implausible jump is rejected (→ haversine).
+    //
+    // But we must not stall forever: after a long gap (SignalR reconnects back off
+    // up to ~60 s and can take several tries) the next valid fix can legitimately
+    // be far ahead, and a real bus never un-progresses along its run. So a jump
+    // that PERSISTS for several consecutive ticks is treated as a genuine
+    // re-acquisition and adopted as the new baseline, rather than rejected forever.
+    // A transient one-off jump still just falls back to haversine for that tick.
+    const prev = this.lastRouteCumByStudent.get(studentId);
+    if (prev) {
+      const implausible =
+        busCum < prev.cum - ROUTE_MONOTONIC_TOLERANCE_METERS ||
+        busCum > prev.cum + ROUTE_FORWARD_WINDOW_METERS;
+      if (implausible && prev.rejects + 1 < ROUTE_MAX_REJECTS) {
+        // Keep the old baseline, count the rejection, fall back to haversine.
+        this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, rejects: prev.rejects + 1 });
+        return null;
+      }
+      // Either plausible, or rejected long enough to re-acquire — fall through.
     }
-    this.lastRouteCumByStudent.set(studentId, busCum);
+    this.lastRouteCumByStudent.set(studentId, { cum: busCum, rejects: 0 });
 
     return Math.max(0, myStop.cumulativeAtStopMeters - busCum);
   }

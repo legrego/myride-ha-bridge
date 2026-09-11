@@ -48,8 +48,8 @@ const PM_ROUTE = [
 const FAKE_BUSES = [
   { id: "BUS 001", lat: 40.7128, lng: -74.0060, heading: 45,  speed: 22 },
   { id: "BUS 002", lat: 40.7148, lng: -74.0090, heading: 180, speed: 0  },
-  { id: "BUS 042", lat: PM_ROUTE[0][0], lng: PM_ROUTE[0][1], heading: 270, speed: 20, route: PM_ROUTE, routeIdx: 1, routeDir: 1 },
-  { id: "BUS 099", lat: AM_ROUTE[0][0], lng: AM_ROUTE[0][1], heading: 90,  speed: 20, route: AM_ROUTE, routeIdx: 1, routeDir: 1 },
+  { id: "BUS 042", lat: PM_ROUTE[0][0], lng: PM_ROUTE[0][1], heading: 270, speed: 20, route: PM_ROUTE, routeIdx: 1 },
+  { id: "BUS 099", lat: AM_ROUTE[0][0], lng: AM_ROUTE[0][1], heading: 90,  speed: 20, route: AM_ROUTE, routeIdx: 1 },
 ];
 
 /**
@@ -162,9 +162,11 @@ function randomWalk(bus) {
 }
 
 /**
- * Advance a route-following bus one tick toward its current target vertex,
- * ping-ponging back and forth along the polyline so it keeps moving. Returns the
- * same NewLocation shape as randomWalk().
+ * Advance a route-following bus one tick toward its current target vertex. On
+ * reaching the end it restarts from the top — a fresh forward pass, like a new
+ * run — rather than reversing back through the same cumulative frame (which the
+ * route-distance guard would treat as backward motion). The guard re-acquires
+ * after the wrap. Returns the same NewLocation shape as randomWalk().
  */
 function routeWalk(bus) {
   const route = bus.route;
@@ -181,9 +183,13 @@ function routeWalk(bus) {
     // Reached (or overshoot) the waypoint — snap to it and pick the next one.
     bus.lat = target[0];
     bus.lng = target[1];
-    bus.routeIdx += bus.routeDir;
-    if (bus.routeIdx >= route.length) { bus.routeIdx = route.length - 2; bus.routeDir = -1; }
-    else if (bus.routeIdx < 0) { bus.routeIdx = 1; bus.routeDir = 1; }
+    bus.routeIdx += 1;
+    if (bus.routeIdx >= route.length) {
+      // Completed the route — teleport back to the start for a fresh forward pass.
+      bus.lat = route[0][0];
+      bus.lng = route[0][1];
+      bus.routeIdx = 1;
+    }
   } else {
     const frac = stepM / distM;
     bus.lat += (target[0] - bus.lat) * frac;

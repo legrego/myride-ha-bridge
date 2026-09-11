@@ -637,6 +637,19 @@ describe("MqttBridge", () => {
         // Student b has no baseline, so an early-route reading is accepted.
         assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0), 3000);
       });
+
+      it("re-acquires after a jump persists (recovers from a long update gap)", () => {
+        // Baseline at the route start (cum 0).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
+        // A far-ahead position (cum 3000) is rejected while it looks like a one-off
+        // wrong-pass jump...
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), null);
+        // ...but once it persists (3rd consecutive), it's taken as genuine and adopted.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+        // Tracking continues from the new baseline (no permanent stall).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+      });
     });
 
     it("publishes route distance (not haversine) for distance_to_stop and eta", () => {
