@@ -138,6 +138,17 @@
       text-align: right;
     }
 
+    .app-footer {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-align: center;
+      padding: 18px 20px 8px;
+    }
+
+    .app-footer code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
     form {
       padding: 16px 20px;
       display: flex;
@@ -515,6 +526,8 @@
     </details>
   </main>
 
+  <footer class="app-footer" id="app-version"></footer>
+
   <script>
     const $ = id => document.getElementById(id);
 
@@ -622,10 +635,26 @@
 
     setInterval(tickBusTimes, 1000);
 
+    function renderVersion(v) {
+      const el = $('app-version');
+      if (!v) { el.textContent = ''; return; }
+      const parts = [];
+      if (v.version) parts.push('v' + v.version);
+      if (v.commitShort && v.commitShort !== 'unknown') {
+        parts.push('<code>' + v.commitShort + '</code>');
+      }
+      if (v.buildTime) {
+        const d = new Date(v.buildTime);
+        if (!isNaN(d)) parts.push('built ' + d.toLocaleString());
+      }
+      el.innerHTML = parts.join(' · ');
+    }
+
     async function fetchStatus() {
       try {
         const r = await fetch('/status');
         const s = await r.json();
+        renderVersion(s.version);
         $('sim-banner').className = s.simulate ? 'visible' : '';
         setPill('s-signalr', s.signalrConnected, s.signalrConnected ? 'Connected' : 'Disconnected');
         setPill('s-mqtt', s.mqttConnected, s.mqttConnected ? 'Connected' : 'Disconnected');

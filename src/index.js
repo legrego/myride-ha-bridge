@@ -44,6 +44,7 @@ const { ApiServer } = require("./api-server");
 const { runSimulation } = require("./simulator");
 const { MyRideApi } = require("./myride-api");
 const { StudentTracker } = require("./student-tracker");
+const { version } = require("./version");
 
 // ─── Configuration ───────────────────────────────────────────────
 const config = {
@@ -320,6 +321,7 @@ function getBridgeStatus() {
   const now = Math.floor(Date.now() / 1000);
   return {
     bridge: "myride-ha-bridge",
+    version,
     tokenExpired: refreshTokenExpired,
     tokenExpiresAt: tokenExpiresAt ? new Date(tokenExpiresAt * 1000).toISOString() : null,
     tokenExpiresInSeconds: tokenExpiresAt ? Math.max(0, tokenExpiresAt - now) : null,
