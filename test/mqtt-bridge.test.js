@@ -595,60 +595,73 @@ describe("MqttBridge", () => {
     });
 
     describe("_routeDistanceMeters()", () => {
+      // Source timestamps (ms). Normal cadence is ~30 s between frames; at
+      // ROUTE_MAX_PLAUSIBLE_MPS (30) that permits ~150 + 30×30 = 1050 m of forward
+      // progress — enough for one 1000 m vertex step but not a 3000 m jump.
+      const t0 = 1_000_000;
+      const t = (sec) => t0 + sec * 1000;
+
       it("returns cumulativeAtStop − cumulativeAtBus for a mid-route bus", () => {
         // Bus on vertex idx1 (cum 1000) → remaining 3000 − 1000 = 2000.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
       });
 
       it("clamps remaining at 0 when the bus is at/after the stop vertex", () => {
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t0), 0);
       });
 
       it("returns null when route geometry is missing", () => {
-        assert.equal(bridge._routeDistanceMeters("s1", plainStop, 41.51, -72.0), null);
+        assert.equal(bridge._routeDistanceMeters("s1", plainStop, 41.51, -72.0, t0), null);
       });
 
       it("returns null when the bus is off-route (snap beyond threshold)", () => {
         // ~0.02° longitude east (~1.6 km) — well past the 150 m snap cutoff.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t0), null);
       });
 
-      it("rejects a backward jump via the monotonic guard, keeping the baseline", () => {
+      it("rejects a backward jump, keeping the baseline", () => {
         // Accept a forward reading at vertex idx2 (cum 2000).
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.52, -72.0), 1000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.52, -72.0, t0), 1000);
         // A jump back to idx0 (cum 0) is > 50 m backward → rejected (null).
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), null);
-        // Baseline preserved: a forward reading is still accepted afterward.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t(30)), null);
+        // Baseline preserved: a plausible forward reading (~30 s later) is accepted.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), 0);
       });
 
-      it("rejects an implausible forward jump (wrong later pass of a loop)", () => {
+      it("rejects a forward jump larger than the elapsed time can justify", () => {
         // Accept an early reading at vertex idx0 (cum 0).
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
-        // A jump to idx3 (cum 3000) is +3000 m — far past one update's plausible
-        // travel (1000 m window) → rejected as a wrong-pass snap.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), null);
-        // Baseline preserved: a within-window forward reading is still accepted.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
+        // +3000 m over ~30 s (≈100 m/s) is implausible → rejected as a wrong-pass snap.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), null);
+        // Baseline preserved: a plausible +1000 m step (~30 s) is accepted.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t(60)), 2000);
       });
 
       it("tracks the guard per student id", () => {
-        bridge._routeDistanceMeters("a", routeStop, 41.52, -72.0); // a → 2000
+        bridge._routeDistanceMeters("a", routeStop, 41.52, -72.0, t0); // a → 2000
         // Student b has no baseline, so an early-route reading is accepted.
-        assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0), 3000);
+        assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0, t0), 3000);
       });
 
-      it("re-acquires after a jump persists (recovers from a long update gap)", () => {
+      it("does not promote a recurring wrong-pass snap, but re-acquires after a real gap", () => {
         // Baseline at the route start (cum 0).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
+        // A deterministic far-ahead snap (cum 3000) recurs at normal cadence. Each
+        // frame's elapsed is only ~30 s, so it stays rejected — repetition alone
+        // never promotes it (the defect the count-based guard had).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(90)), null);
+        // But after a genuine long gap (~140 s, e.g. a SignalR reconnect) the same
+        // advance is time-plausible → adopted as the new baseline.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(230)), 0);
+      });
+
+      it("falls back to a small allowance when the source timestamp is unknown", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
-        // A far-ahead position (cum 3000) is rejected while it looks like a one-off
-        // wrong-pass jump...
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), null);
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), null);
-        // ...but once it persists (3rd consecutive), it's taken as genuine and adopted.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
-        // Tracking continues from the new baseline (no permanent stall).
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0), 0);
+        // No nowMs → elapsed treated as 0 → only the 150 m base is allowed, so a
+        // +1000 m step is rejected.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), null);
       });
     });
 
@@ -697,7 +710,7 @@ describe("MqttBridge", () => {
       assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
     });
 
-    it("resets the monotonic guard when stop progress is cleared", () => {
+    it("resets the wrong-pass guard when stop progress is cleared", () => {
       bridge.publishStudent(makeStudent(routeStop));
       bridge.publishStudentLocation(makeStudent(routeStop), at(41.52, -72.0)); // baseline 2000
       // A stop-identity change clears progress (and the route baseline).

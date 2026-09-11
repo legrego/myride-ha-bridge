@@ -127,6 +127,18 @@ function metersPerTick(bus) {
   return bus.speed * MPH_TO_MS * (TICK_MS / 1000);
 }
 
+/** Build a NewLocation payload from a bus's current position/heading/speed. */
+function locationOf(bus) {
+  return {
+    assetUniqueId: bus.id,
+    logTime: new Date().toISOString(),
+    latitude: +bus.lat.toFixed(6),
+    longitude: +bus.lng.toFixed(6),
+    heading: Math.round(bus.heading),
+    speed: bus.speed,
+  };
+}
+
 function randomWalk(bus) {
   // Route-following buses advance along their fixed polyline instead of wandering,
   // so the route-aware distance/ETA sensors have coherent geometry to track.
@@ -151,25 +163,23 @@ function randomWalk(bus) {
     bus.lng += (meters * Math.sin(rad)) / (METERS_PER_DEG_LAT * cosLat);
   }
 
-  return {
-    assetUniqueId: bus.id,
-    logTime: new Date().toISOString(),
-    latitude: +bus.lat.toFixed(6),
-    longitude: +bus.lng.toFixed(6),
-    heading: Math.round(bus.heading),
-    speed: bus.speed,
-  };
+  return locationOf(bus);
 }
 
 /**
- * Advance a route-following bus one tick toward its current target vertex. On
- * reaching the end it restarts from the top — a fresh forward pass, like a new
- * run — rather than reversing back through the same cumulative frame (which the
- * route-distance guard would treat as backward motion). The guard re-acquires
- * after the wrap. Returns the same NewLocation shape as randomWalk().
+ * Advance a route-following bus one tick toward its current target vertex. It
+ * travels the route forward once and then idles at the final vertex (its run is
+ * done) — it never reverses back through the same cumulative frame, which the
+ * route-distance guard rightly treats as backward motion (a real run restart is a
+ * new run, not a reversal). Returns the same NewLocation shape as randomWalk().
  */
 function routeWalk(bus) {
   const route = bus.route;
+  // Past the last vertex: the run is finished — hold position, speed 0.
+  if (bus.routeIdx >= route.length) {
+    bus.speed = 0;
+    return locationOf(bus);
+  }
   const target = route[bus.routeIdx];
   // Work in meters (mph → m/s) so speed is physical and lng isn't over-counted at
   // these latitudes; interpolate the raw degree deltas by the same fraction.
@@ -184,12 +194,7 @@ function routeWalk(bus) {
     bus.lat = target[0];
     bus.lng = target[1];
     bus.routeIdx += 1;
-    if (bus.routeIdx >= route.length) {
-      // Completed the route — teleport back to the start for a fresh forward pass.
-      bus.lat = route[0][0];
-      bus.lng = route[0][1];
-      bus.routeIdx = 1;
-    }
+    if (bus.routeIdx >= route.length) bus.speed = 0; // arrived at the run's end
   } else {
     const frac = stepM / distM;
     bus.lat += (target[0] - bus.lat) * frac;
@@ -197,14 +202,7 @@ function routeWalk(bus) {
     bus.heading = ((Math.atan2(dLngM, dLatM) * 180) / Math.PI + 360) % 360;
   }
 
-  return {
-    assetUniqueId: bus.id,
-    logTime: new Date().toISOString(),
-    latitude: +bus.lat.toFixed(6),
-    longitude: +bus.lng.toFixed(6),
-    heading: Math.round(bus.heading),
-    speed: bus.speed,
-  };
+  return locationOf(bus);
 }
 
 async function runSimulation({ port, tokenFile, mqtt }) {

@@ -96,6 +96,12 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+// Max distance (m) the student's stop pin may sit from its nearest route vertex
+// for the route geometry to be trusted for that stop. Beyond this the geometry is
+// partial/wrong, so we skip route mode and fall back to haversine. Mirrors the
+// live bus's ROUTE_SNAP_MAX_METERS trust radius in mqtt-bridge.js.
+const STOP_SNAP_MAX_METERS = 150;
+
 /**
  * Parse a WKT LINESTRING into an array of [lat, lng] vertices.
  *
@@ -211,8 +217,10 @@ function nearestVertexCumulative(lat, lng, polyline, cumulative) {
  *
  * The remaining road distance to the stop is then
  * `cumulativeAtStopMeters − cumulativeAtBus`, where the bus is snapped live. When
- * geometry is missing/unparseable (or the stop lacks coordinates), the fields are
- * left unset and the publisher falls back to haversine.
+ * geometry is missing/unparseable, the stop lacks coordinates, or the stop pin
+ * doesn't sit on this geometry (snap beyond STOP_SNAP_MAX_METERS — a sign of
+ * partial/wrong route data), the fields are left unset and the publisher falls
+ * back to haversine.
  *
  * @param {object} run — raw run carrying `runDetail`
  * @param {object|null} myStop — normalized stop (mutated in place)
@@ -223,7 +231,12 @@ function attachRouteGeometry(run, myStop) {
   if (polyline.length < 2) return; // need at least one leg for cumulative distance
   const cumulative = cumulativeMetersAlong(polyline);
   const stopSnap = nearestVertexCumulative(myStop.lat, myStop.lng, polyline, cumulative);
-  if (!stopSnap) return;
+  // The stop pin is authoritative and lies on the run, so its nearest route vertex
+  // should be close. A far snap means the geometry is partial/wrong for this stop —
+  // don't enable route mode (which could report zero or omit a long final leg);
+  // leave the fields unset so the publisher uses haversine. Mirrors the live bus's
+  // ROUTE_SNAP_MAX_METERS trust radius in mqtt-bridge.js.
+  if (!stopSnap || stopSnap.distMeters > STOP_SNAP_MAX_METERS) return;
   myStop.routePolyline = polyline;
   myStop.cumulativeMeters = cumulative;
   myStop.cumulativeAtStopMeters = stopSnap.cumulativeMeters;

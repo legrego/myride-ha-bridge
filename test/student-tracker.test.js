@@ -509,6 +509,28 @@ describe("normalizeStudent() route geometry enrichment", () => {
     assert.equal(stop.routePolyline, undefined);
     assert.equal(stop.cumulativeAtStopMeters, undefined);
   });
+
+  it("leaves route fields unset when the stop pin is far off the route geometry", () => {
+    // Home stop ~7.8 km north of every route vertex (well beyond the 150 m trust
+    // radius) — a sign of partial/wrong geometry. Route mode must not engage.
+    const offRoute = {
+      ...student,
+      homeAddress: { latitude: 41.60, longitude: -72.0 },
+      runInfo: [{
+        ...ROUTE_RUN,
+        stopsInfo: [
+          { ...ROUTE_RUN.stopsInfo[0], stopLat: 41.60, stopLong: -72.0 },
+          ROUTE_RUN.stopsInfo[1],
+        ],
+      }],
+    };
+    const s = normalizeStudent(offRoute, 9 * 60);
+    const stop = s.currentRun.myStop;
+    assert.equal(stop.stopId, 1638);
+    assert.equal(stop.lat, 41.60); // stop pin still set
+    assert.equal(stop.routePolyline, undefined); // but route geometry rejected
+    assert.equal(stop.cumulativeAtStopMeters, undefined);
+  });
 });
 
 // ── Integration: StudentTracker ───────────────────────────────────────────────
