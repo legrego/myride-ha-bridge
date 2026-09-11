@@ -547,6 +547,180 @@ describe("MqttBridge", () => {
     });
   });
 
+  describe("route-aware distance & ETA", () => {
+    // Route runs due north along -72.0; legs are 1000 m each (hand-set cumulative,
+    // independent of the haversine leg lengths so the assertions are exact). The
+    // stop pin sits at the last vertex → cumulativeAtStopMeters = 3000. All fabricated.
+    const routePolyline = [
+      [41.50, -72.0],
+      [41.51, -72.0],
+      [41.52, -72.0],
+      [41.53, -72.0],
+    ];
+    const cumulativeMeters = [0, 1000, 2000, 3000];
+    const routeStop = {
+      stopId: 1638,
+      name: "MAPLE ST @ 3RD AVE",
+      lat: 41.53,
+      lng: -72.0,
+      actionType: "Pickup",
+      stopTime: "1900-01-01T09:01:00",
+      stopTimeMinutes: 541,
+      routePolyline,
+      cumulativeMeters,
+      cumulativeAtStopMeters: 3000,
+    };
+    const plainStop = {
+      stopId: 1638, name: "MAPLE ST @ 3RD AVE", lat: 41.53, lng: -72.0,
+      actionType: "Pickup", stopTime: "1900-01-01T09:01:00", stopTimeMinutes: 541,
+    };
+    const makeStudent = (stop) => ({
+      uniqueId: "2008416",
+      firstName: "Lucas",
+      lastName: "Gregory",
+      currentRun: {
+        runId: 719, busNumber: "BUS 012", activeVehicle: "BUS 012",
+        isSubstitute: false, myStop: stop, myStopSeq: 2, totalStops: 3,
+        stopSchedule: [],
+      },
+      todaysRuns: [],
+    });
+    const at = (lat, lng, overrides = {}) => ({
+      assetUniqueId: "BUS 012", latitude: lat, longitude: lng,
+      heading: 0, speed: 20, logTime: "2026-09-11T13:01:00Z", ...overrides,
+    });
+
+    beforeEach(() => {
+      bridge.discoveredStudents.clear();
+    });
+
+    describe("_routeDistanceMeters()", () => {
+      // Source timestamps (ms). Normal cadence is ~30 s between frames; at
+      // ROUTE_MAX_PLAUSIBLE_MPS (30) that permits ~150 + 30×30 = 1050 m of forward
+      // progress — enough for one 1000 m vertex step but not a 3000 m jump.
+      const t0 = 1_000_000;
+      const t = (sec) => t0 + sec * 1000;
+
+      it("returns cumulativeAtStop − cumulativeAtBus for a mid-route bus", () => {
+        // Bus on vertex idx1 (cum 1000) → remaining 3000 − 1000 = 2000.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
+      });
+
+      it("clamps remaining at 0 when the bus is at/after the stop vertex", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t0), 0);
+      });
+
+      it("returns null when route geometry is missing", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", plainStop, 41.51, -72.0, t0), null);
+      });
+
+      it("returns null when the bus is off-route (snap beyond threshold)", () => {
+        // ~0.02° longitude east (~1.6 km) — well past the 150 m snap cutoff.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t0), null);
+      });
+
+      it("rejects a backward jump, keeping the baseline", () => {
+        // Accept a forward reading at vertex idx2 (cum 2000).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.52, -72.0, t0), 1000);
+        // A jump back to idx0 (cum 0) is > 50 m backward → rejected (null).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t(30)), null);
+        // Baseline preserved: a plausible forward reading (~30 s later) is accepted.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), 0);
+      });
+
+      it("rejects a forward jump larger than the elapsed time can justify", () => {
+        // Accept an early reading at vertex idx0 (cum 0).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
+        // +3000 m over ~30 s (≈100 m/s) is implausible → rejected as a wrong-pass snap.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), null);
+        // Baseline preserved: a plausible +1000 m step (~30 s) is accepted.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t(60)), 2000);
+      });
+
+      it("tracks the guard per student id", () => {
+        bridge._routeDistanceMeters("a", routeStop, 41.52, -72.0, t0); // a → 2000
+        // Student b has no baseline, so an early-route reading is accepted.
+        assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0, t0), 3000);
+      });
+
+      it("does not promote a recurring wrong-pass snap, but re-acquires after a real gap", () => {
+        // Baseline at the route start (cum 0).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
+        // A deterministic far-ahead snap (cum 3000) recurs at normal cadence. Each
+        // frame's elapsed is only ~30 s, so it stays rejected — repetition alone
+        // never promotes it (the defect the count-based guard had).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(90)), null);
+        // But after a genuine long gap (~140 s, e.g. a SignalR reconnect) the same
+        // advance is time-plausible → adopted as the new baseline.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(230)), 0);
+      });
+
+      it("falls back to a small allowance when the source timestamp is unknown", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
+        // No nowMs → elapsed treated as 0 → only the 150 m base is allowed, so a
+        // +1000 m step is rejected.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), null);
+      });
+    });
+
+    it("publishes route distance (not haversine) for distance_to_stop and eta", () => {
+      bridge.publishStudent(makeStudent(routeStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0));
+
+      // Route remaining is exactly 2000; crow-flies to the pin (0.02°) is ~2224 m.
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.equal(dist, 2000);
+      // ETA = 2000 m ÷ (20 mph × 26.8224) ≈ 3.7 → 4 min.
+      const eta = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1]);
+      assert.equal(eta, 4);
+    });
+
+    it("falls back to haversine distance when the stop has no route geometry", () => {
+      bridge.publishStudent(makeStudent(plainStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(plainStop), at(41.51, -72.0));
+
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      // Crow-flies over 0.02° latitude ≈ 2224 m — clearly not the 2000 m route value.
+      assert.ok(dist > 2200 && dist < 2250, `expected ~2224m haversine, got ${dist}`);
+    });
+
+    it("falls back to haversine when the bus is off-route", () => {
+      bridge.publishStudent(makeStudent(routeStop));
+      publishCalls.length = 0;
+      // Off-route east: route snap exceeds 150 m → haversine to the pin instead.
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98));
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.ok(dist > 2000, `expected haversine (>2000m), got ${dist}`);
+    });
+
+    it("keeps approaching on haversine even when route distance is within the radius", () => {
+      // Route says 400 m remaining (< 500 m radius) but the bus is physically
+      // ~2224 m from the pin → approaching must be OFF (driven by haversine).
+      const shortRouteStop = { ...routeStop, cumulativeAtStopMeters: 1400 };
+      bridge.publishStudent(makeStudent(shortRouteStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(shortRouteStop), at(41.51, -72.0));
+
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      assert.equal(dist, 400); // route distance used for the sensor
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+    });
+
+    it("resets the wrong-pass guard when stop progress is cleared", () => {
+      bridge.publishStudent(makeStudent(routeStop));
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.52, -72.0)); // baseline 2000
+      // A stop-identity change clears progress (and the route baseline).
+      const moved = makeStudent(routeStop);
+      moved.currentRun = { ...moved.currentRun, runId: 800, activeVehicle: "BUS 057" };
+      bridge.publishStudent(moved);
+      assert.equal(bridge.lastRouteCumByStudent.has("2008416"), false);
+    });
+  });
+
   describe("disconnect()", () => {
     it("publishes offline status and ends client", async () => {
       publishCalls.length = 0;

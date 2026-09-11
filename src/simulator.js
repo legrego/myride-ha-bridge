@@ -15,18 +15,51 @@
 const { ApiServer } = require("./api-server");
 const { MqttBridge } = require("./mqtt-bridge");
 
-// Four fake buses doing a random walk around a generic suburban area
-const FAKE_BUSES = [
-  { id: "BUS 001", lat: 40.7128, lng: -74.0060, heading: 45,  speed: 22 },
-  { id: "BUS 002", lat: 40.7148, lng: -74.0090, heading: 180, speed: 0  },
-  { id: "BUS 042", lat: 40.7108, lng: -74.0040, heading: 270, speed: 31 },
-  { id: "BUS 099", lat: 40.7168, lng: -74.0110, heading: 90,  speed: 14 },
-];
-
 // Home stop sits inside the fake buses' wander area so distance/approaching
 // sensors visibly change in sim. School is a bit further off.
 const HOME_STOP = { stopId: 1638, desc: "MAPLE ST @ 3RD AVE", lat: 40.713, lng: -74.007 };
 const SCHOOL_STOP = { stopId: 21, desc: "PS 42", locationName: "PS 42", lat: 40.72, lng: -74.0 };
+
+// Fabricated approach polylines the student's buses follow, matching the WKT
+// geometry on the runDetail rows below (all coordinates invented). The AM bus
+// (BUS 099) winds toward HOME_STOP then on to school; the PM bus (BUS 042) runs
+// school → HOME_STOP. Both routes deliberately jog (a dogleg east then back) so
+// the road distance is visibly longer than crow-flies — exercising the
+// route-aware distance/ETA path in sim.
+const AM_ROUTE = [
+  [40.7100, -74.0040],
+  [40.7104, -74.0022], // jog east...
+  [40.7118, -74.0028],
+  [40.7126, -74.0052], // ...back west toward the stop
+  [40.7130, -74.0070], // HOME_STOP
+  [40.7190, -73.9990], // toward school
+];
+const PM_ROUTE = [
+  [40.7190, -73.9990], // near school
+  [40.7160, -74.0020],
+  [40.7150, -74.0055], // jog
+  [40.7135, -74.0050],
+  [40.7130, -74.0070], // HOME_STOP
+];
+
+// Four fake buses doing a random walk around a generic suburban area. The two
+// that carry the student (BUS 099 AM, BUS 042 PM) instead follow a fixed route
+// once from start to finish, then idle at the final vertex.
+const FAKE_BUSES = [
+  { id: "BUS 001", lat: 40.7128, lng: -74.0060, heading: 45,  speed: 22 },
+  { id: "BUS 002", lat: 40.7148, lng: -74.0090, heading: 180, speed: 0  },
+  { id: "BUS 042", lat: PM_ROUTE[0][0], lng: PM_ROUTE[0][1], heading: 270, speed: 20, route: PM_ROUTE, routeIdx: 1 },
+  { id: "BUS 099", lat: AM_ROUTE[0][0], lng: AM_ROUTE[0][1], heading: 90,  speed: 20, route: AM_ROUTE, routeIdx: 1 },
+];
+
+/**
+ * WKT LINESTRING (lng lat order) for a slice of the route, [from..to] inclusive.
+ * Concatenating the rows' slices reproduces the whole route polyline.
+ */
+function wktPath(route, from, to) {
+  const pairs = route.slice(from, to + 1).map(([lat, lng]) => `${lng} ${lat}`);
+  return `LINESTRING (${pairs.join(", ")})`;
+}
 
 // Fake student: normally rides BUS 042 (AM), today BUS 099 is substituting.
 // PM run uses BUS 042 as usual. Mirrors the real Lucas/bus-57 scenario.
@@ -49,10 +82,10 @@ const FAKE_STUDENTS = [
           { stopTime: "1900-01-01T09:10:00", actionType: "Dropoff", stopId: SCHOOL_STOP.stopId, stopDescription: SCHOOL_STOP.desc, stopAddress: "1 SCHOOL WAY", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: SCHOOL_STOP.lat, stopLong: SCHOOL_STOP.lng, locationName: SCHOOL_STOP.locationName },
         ],
         runDetail: [
-          { runStopSeq: 0, stopId: 9001, stopTime: "1900-01-01T08:40:00", directionSeq: 0 },
-          { runStopSeq: 1, stopId: 9002, stopTime: "1900-01-01T08:43:00", directionSeq: 0 },
-          { runStopSeq: 2, stopId: HOME_STOP.stopId, stopTime: "1900-01-01T08:45:00", directionSeq: 0 },
-          { runStopSeq: 3, stopId: SCHOOL_STOP.stopId, stopTime: "1900-01-01T09:10:00", directionSeq: 0 },
+          { runStopSeq: 0, stopId: 9001, stopTime: "1900-01-01T08:40:00", directionSeq: 0, directionGeomLine: wktPath(AM_ROUTE, 0, 1) },
+          { runStopSeq: 1, stopId: 9002, stopTime: "1900-01-01T08:43:00", directionSeq: 0, directionGeomLine: wktPath(AM_ROUTE, 1, 2) },
+          { runStopSeq: 2, stopId: HOME_STOP.stopId, stopTime: "1900-01-01T08:45:00", directionSeq: 0, directionGeomLine: wktPath(AM_ROUTE, 2, 4) },
+          { runStopSeq: 3, stopId: SCHOOL_STOP.stopId, stopTime: "1900-01-01T09:10:00", directionSeq: 0, directionGeomLine: wktPath(AM_ROUTE, 4, 5) },
         ],
       },
       {
@@ -64,9 +97,9 @@ const FAKE_STUDENTS = [
           { stopTime: "1900-01-01T15:45:00", actionType: "Dropoff", stopId: HOME_STOP.stopId, stopDescription: HOME_STOP.desc, stopAddress: "MAPLE ST", stopCity: "TESTBORO", stopState: "NY", stopZip: "10001", stopLat: HOME_STOP.lat, stopLong: HOME_STOP.lng, locationName: "" },
         ],
         runDetail: [
-          { runStopSeq: 0, stopId: SCHOOL_STOP.stopId, stopTime: "1900-01-01T15:15:00", directionSeq: 0 },
-          { runStopSeq: 1, stopId: 9003, stopTime: "1900-01-01T15:30:00", directionSeq: 0 },
-          { runStopSeq: 2, stopId: HOME_STOP.stopId, stopTime: "1900-01-01T15:45:00", directionSeq: 0 },
+          { runStopSeq: 0, stopId: SCHOOL_STOP.stopId, stopTime: "1900-01-01T15:15:00", directionSeq: 0, directionGeomLine: wktPath(PM_ROUTE, 0, 1) },
+          { runStopSeq: 1, stopId: 9003, stopTime: "1900-01-01T15:30:00", directionSeq: 0, directionGeomLine: wktPath(PM_ROUTE, 1, 3) },
+          { runStopSeq: 2, stopId: HOME_STOP.stopId, stopTime: "1900-01-01T15:45:00", directionSeq: 0, directionGeomLine: wktPath(PM_ROUTE, 3, 4) },
         ],
       },
     ],
@@ -83,7 +116,34 @@ async function getStudents() {
 
 const TICK_MS = 5000; // emit a location update every 5 s
 
+// bus.speed is mph (that's what we publish/consume), so convert to m/s before
+// moving. Meters-per-degree of latitude is ~constant; longitude degrees shrink
+// by cos(latitude), so divide lng deltas by it to keep movement physical.
+const MPH_TO_MS = 0.44704;
+const METERS_PER_DEG_LAT = 111320;
+
+/** Meters the bus travels in one tick at its current mph. */
+function metersPerTick(bus) {
+  return bus.speed * MPH_TO_MS * (TICK_MS / 1000);
+}
+
+/** Build a NewLocation payload from a bus's current position/heading/speed. */
+function locationOf(bus) {
+  return {
+    assetUniqueId: bus.id,
+    logTime: new Date().toISOString(),
+    latitude: +bus.lat.toFixed(6),
+    longitude: +bus.lng.toFixed(6),
+    heading: Math.round(bus.heading),
+    speed: bus.speed,
+  };
+}
+
 function randomWalk(bus) {
+  // Route-following buses advance along their fixed polyline instead of wandering,
+  // so the route-aware distance/ETA sensors have coherent geometry to track.
+  if (bus.route) return routeWalk(bus);
+
   // Drift heading slowly
   bus.heading = (bus.heading + (Math.random() * 20 - 10) + 360) % 360;
 
@@ -94,22 +154,55 @@ function randomWalk(bus) {
     bus.speed = Math.max(5, Math.min(45, bus.speed + Math.round(Math.random() * 6 - 3)));
   }
 
-  // Move position based on heading and speed
+  // Move position based on heading and speed (mph → m/s → degrees).
   if (bus.speed > 0) {
     const rad = (bus.heading * Math.PI) / 180;
-    const dist = (bus.speed * TICK_MS) / 1000 / 111320; // degrees per tick
-    bus.lat += dist * Math.cos(rad);
-    bus.lng += dist * Math.sin(rad);
+    const meters = metersPerTick(bus);
+    const cosLat = Math.cos((bus.lat * Math.PI) / 180) || 1;
+    bus.lat += (meters * Math.cos(rad)) / METERS_PER_DEG_LAT;
+    bus.lng += (meters * Math.sin(rad)) / (METERS_PER_DEG_LAT * cosLat);
   }
 
-  return {
-    assetUniqueId: bus.id,
-    logTime: new Date().toISOString(),
-    latitude: +bus.lat.toFixed(6),
-    longitude: +bus.lng.toFixed(6),
-    heading: Math.round(bus.heading),
-    speed: bus.speed,
-  };
+  return locationOf(bus);
+}
+
+/**
+ * Advance a route-following bus one tick toward its current target vertex. It
+ * travels the route forward once and then idles at the final vertex (its run is
+ * done) — it never reverses back through the same cumulative frame, which the
+ * route-distance guard rightly treats as backward motion (a real run restart is a
+ * new run, not a reversal). Returns the same NewLocation shape as randomWalk().
+ */
+function routeWalk(bus) {
+  const route = bus.route;
+  // Past the last vertex: the run is finished — hold position, speed 0.
+  if (bus.routeIdx >= route.length) {
+    bus.speed = 0;
+    return locationOf(bus);
+  }
+  const target = route[bus.routeIdx];
+  // Work in meters (mph → m/s) so speed is physical and lng isn't over-counted at
+  // these latitudes; interpolate the raw degree deltas by the same fraction.
+  const cosLat = Math.cos((bus.lat * Math.PI) / 180) || 1;
+  const dLatM = (target[0] - bus.lat) * METERS_PER_DEG_LAT;
+  const dLngM = (target[1] - bus.lng) * METERS_PER_DEG_LAT * cosLat;
+  const distM = Math.hypot(dLatM, dLngM);
+  const stepM = metersPerTick(bus);
+
+  if (distM <= stepM || distM === 0) {
+    // Reached (or overshoot) the waypoint — snap to it and pick the next one.
+    bus.lat = target[0];
+    bus.lng = target[1];
+    bus.routeIdx += 1;
+    if (bus.routeIdx >= route.length) bus.speed = 0; // arrived at the run's end
+  } else {
+    const frac = stepM / distM;
+    bus.lat += (target[0] - bus.lat) * frac;
+    bus.lng += (target[1] - bus.lng) * frac;
+    bus.heading = ((Math.atan2(dLngM, dLatM) * 180) / Math.PI + 360) % 360;
+  }
+
+  return locationOf(bus);
 }
 
 async function runSimulation({ port, tokenFile, mqtt }) {

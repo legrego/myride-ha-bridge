@@ -16,7 +16,27 @@
  */
 
 const mqtt = require("mqtt");
-const { haversineMeters } = require("./student-tracker");
+const { haversineMeters, nearestVertexCumulative } = require("./student-tracker");
+
+// Max snap distance (m) from the live bus to the nearest route vertex before we
+// treat the fix as off-route/GPS-noise and fall back to haversine.
+const ROUTE_SNAP_MAX_METERS = 150;
+// Allowed backward movement (m) in cumulative route distance between frames before
+// we reject the reading as a wrong-pass snap on a loop/U-turn. Backward motion is
+// never legitimate within a run (cumulative only grows; a genuine restart resets
+// this baseline via the stop-identity change), so this is a small jitter tolerance.
+const ROUTE_MONOTONIC_TOLERANCE_METERS = 50;
+// Forward progress allowance is time-based: a reading may advance the cumulative
+// position by at most BASE + (seconds since the previous frame) × MAX_PLAUSIBLE_MPS.
+// This is what separates a genuine long gap (e.g. a SignalR reconnect backing off
+// up to ~60 s: large elapsed → large allowance → the guard re-acquires) from a
+// deterministic wrong-pass snap at a loop/crossing (normal cadence → small
+// allowance → stays rejected every frame, never promoted). Elapsed is measured
+// frame-to-frame (not since the last *accepted* frame) so a persistent wrong snap
+// can't accrue unbounded slack. BASE is a floor covering vertex spacing / GPS
+// jitter when elapsed is ~0 or the timestamp is unknown.
+const ROUTE_FORWARD_BASE_METERS = 150;
+const ROUTE_MAX_PLAUSIBLE_MPS = 30; // ~67 mph, generous for a school bus
 
 class MqttBridge {
   /**
@@ -43,8 +63,13 @@ class MqttBridge {
     // stopId alone is insufficient: the home stop shares one stopId across the AM
     // and PM runs, so only the run/active-vehicle change marks the transition.
     this.lastStopKeyByStudent = new Map();
-
-
+    // studentId → { cum, seenMs }: last accepted cumulative route distance of the
+    // bus (meters from the run start) and the source timestamp of the last frame
+    // seen (accepted or not). Used by _routeDistanceMeters to reject wrong-pass
+    // snaps on a loop/U-turn — backward to an earlier pass, or further forward than
+    // the elapsed source time can justify — while re-acquiring after a genuine long
+    // gap. Reset whenever stop progress is cleared (stop identity change / no run).
+    this.lastRouteCumByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
     console.log(`[MQTT] Connecting to ${url}:${port} ...`);
@@ -533,7 +558,8 @@ class MqttBridge {
     // Stop tracking: distance / ETA / approaching, keyed off the student's own
     // stop. GPS-derived from the live bus position and the authoritative stop
     // pin, so it updates on every location event (not just each 15-min poll).
-    this._publishStopProgress(studentId, currentRun.myStop, latitude, longitude, speed);
+    // logTime feeds the route guard's time-based forward allowance.
+    this._publishStopProgress(studentId, currentRun.myStop, latitude, longitude, speed, Date.parse(logTime));
   }
 
   /**
@@ -547,6 +573,74 @@ class MqttBridge {
     this.client.publish(`${this.topicPrefix}/student/${studentId}/distance_to_stop`, "", { retain: true });
     this.client.publish(`${this.topicPrefix}/student/${studentId}/eta`, "", { retain: true });
     this.client.publish(`${this.topicPrefix}/student/${studentId}/approaching`, "OFF", { retain: true });
+    // Drop the monotonic route-distance baseline: a new/absent stop means the
+    // cumulative frame changed, so the previous bus position is no longer comparable.
+    this.lastRouteCumByStudent.delete(studentId);
+  }
+
+  /**
+   * Road-following distance (meters) from the live bus to the student's stop,
+   * using the precomputed route polyline on `myStop`. Returns null when route
+   * geometry is unavailable, the bus is off-route, or the reading fails the
+   * wrong-pass guard (backward, or further forward than the elapsed source time
+   * can justify) — in every such case the caller falls back to haversine.
+   *
+   * @param {string} studentId — sanitized id (keys the wrong-pass guard)
+   * @param {object} myStop — normalized stop; needs routePolyline, cumulativeMeters,
+   *   cumulativeAtStopMeters (attached by StudentTracker.attachRouteGeometry)
+   * @param {number} busLat
+   * @param {number} busLng
+   * @param {number} [nowMs] — source timestamp (ms) of this fix, for the forward
+   *   allowance; when unknown the allowance falls back to BASE only.
+   * @returns {number|null}
+   */
+  _routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs) {
+    if (
+      !myStop ||
+      !Array.isArray(myStop.routePolyline) ||
+      !Array.isArray(myStop.cumulativeMeters) ||
+      !Number.isFinite(myStop.cumulativeAtStopMeters)
+    ) {
+      return null;
+    }
+
+    const snap = nearestVertexCumulative(
+      busLat, busLng, myStop.routePolyline, myStop.cumulativeMeters
+    );
+    if (!snap) return null;
+
+    // Off-route / GPS noise: the bus is nowhere near the route → don't trust the snap.
+    if (snap.distMeters > ROUTE_SNAP_MAX_METERS) return null;
+
+    const busCum = snap.cumulativeMeters;
+    const prev = this.lastRouteCumByStudent.get(studentId);
+    // Always record that we saw a frame at this time, so the *next* frame's forward
+    // allowance is measured frame-to-frame (a rejected frame still advances the clock).
+    const seenMs = Number.isFinite(nowMs) ? nowMs : (prev ? prev.seenMs : null);
+
+    // Wrong-pass guard: the route can revisit streets (loops/U-turns), so a global
+    // nearest-vertex snap can land on the wrong pass. Reject anything that moves
+    // backward (never legitimate within a run) or further forward than the elapsed
+    // source time plausibly allows. A genuine long gap justifies a large forward
+    // jump (→ re-acquire); a deterministic wrong-pass snap at normal cadence never
+    // does (→ stays on haversine, frame after frame).
+    if (prev) {
+      const elapsedSec =
+        prev.seenMs != null && Number.isFinite(nowMs)
+          ? Math.max(0, (nowMs - prev.seenMs) / 1000)
+          : 0;
+      const allowedForward = ROUTE_FORWARD_BASE_METERS + elapsedSec * ROUTE_MAX_PLAUSIBLE_MPS;
+      const rejected =
+        busCum < prev.cum - ROUTE_MONOTONIC_TOLERANCE_METERS ||
+        busCum > prev.cum + allowedForward;
+      if (rejected) {
+        this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs });
+        return null;
+      }
+    }
+    this.lastRouteCumByStudent.set(studentId, { cum: busCum, seenMs });
+
+    return Math.max(0, myStop.cumulativeAtStopMeters - busCum);
   }
 
   /**
@@ -558,8 +652,9 @@ class MqttBridge {
    * @param {number} busLat
    * @param {number} busLng
    * @param {number} speedMph — current bus speed
+   * @param {number} [nowMs] — source timestamp (ms) of this fix (for the route guard)
    */
-  _publishStopProgress(studentId, myStop, busLat, busLng, speedMph) {
+  _publishStopProgress(studentId, myStop, busLat, busLng, speedMph, nowMs) {
     const distTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
     const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
     const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
@@ -570,22 +665,29 @@ class MqttBridge {
       return;
     }
 
-    const meters = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
-    if (meters == null) return;
+    // Straight-line distance drives "approaching" (physical proximity is the
+    // right trigger) and is the fallback when route geometry is unavailable.
+    const haversine = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
 
-    this.client.publish(distTopic, String(Math.round(meters)), { retain: true });
+    // Road-following distance when we have route geometry and a trustworthy snap;
+    // otherwise fall back to crow-flies. Drives distance_to_stop and the ETA.
+    const routeMeters = this._routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs);
+    const effectiveMeters = routeMeters != null ? routeMeters : haversine;
+    if (effectiveMeters == null) return;
+
+    this.client.publish(distTopic, String(Math.round(effectiveMeters)), { retain: true });
 
     // ETA estimate: distance / current speed. Only meaningful while moving;
     // when stopped we leave ETA blank rather than emit Infinity.
     if (speedMph > 0) {
       const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
-      const etaMin = Math.round(meters / metersPerMin);
+      const etaMin = Math.round(effectiveMeters / metersPerMin);
       this.client.publish(etaTopic, String(etaMin), { retain: true });
     } else {
       this.client.publish(etaTopic, "", { retain: true });
     }
 
-    const approaching = meters <= this.approachRadiusMeters;
+    const approaching = haversine != null && haversine <= this.approachRadiusMeters;
     this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
   }
 
