@@ -12,7 +12,7 @@ async function request(port, method, urlPath, body) {
     body: body !== undefined ? body : undefined,
   });
   const text = await res.text();
-  return { status: res.status, body: text };
+  return { status: res.status, headers: res.headers, body: text };
 }
 
 describe("ApiServer", () => {
@@ -53,6 +53,19 @@ describe("ApiServer", () => {
       const data = JSON.parse(res.body);
       assert.equal(data.ok, true);
       assert.equal(data.signalr, "Connected");
+    });
+  });
+
+  describe("GET /version", () => {
+    it("returns version metadata as JSON", async () => {
+      const res = await request(port, "GET", "/version");
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-type"), "application/json");
+      const data = JSON.parse(res.body);
+      assert.equal(typeof data.version, "string");
+      assert.equal(typeof data.commit, "string");
+      assert.equal(typeof data.commitShort, "string");
+      assert.ok(data.buildTime === null || typeof data.buildTime === "string");
     });
   });
 

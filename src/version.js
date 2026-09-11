@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * version.js — Resolves the running build's version identifier.
  *

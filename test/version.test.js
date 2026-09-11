@@ -28,6 +28,17 @@ function loadVersion(env) {
   }
 }
 
+function loadVersionWithExecSync(env, execSyncImpl) {
+  const childProcess = require("child_process");
+  const originalExecSync = childProcess.execSync;
+  childProcess.execSync = execSyncImpl;
+  try {
+    return loadVersion(env);
+  } finally {
+    childProcess.execSync = originalExecSync;
+  }
+}
+
 describe("version", () => {
   it("reports the package.json version", () => {
     const v = loadVersion({});
@@ -44,12 +55,25 @@ describe("version", () => {
   });
 
   it("treats the 'unknown' ARG default as unset", () => {
-    const v = loadVersion({ GIT_COMMIT: "unknown", BUILD_TIME: "unknown" });
-    // With no env commit, it may fall back to a live git sha (in a checkout)
-    // or "unknown" (in a bare container). Either way it must never be "unknown"
-    // *and* also expose the default ARG string verbatim as buildTime.
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const v = loadVersionWithExecSync(
+      { GIT_COMMIT: "unknown", BUILD_TIME: "unknown" },
+      () => Buffer.from(`${sha}\n`)
+    );
     assert.equal(v.buildTime, null);
-    assert.ok(typeof v.commit === "string" && v.commit.length > 0);
-    assert.ok(typeof v.commitShort === "string" && v.commitShort.length > 0);
+    assert.equal(v.commit, sha);
+    assert.equal(v.commitShort, "0123456");
+  });
+
+  it("falls back to unknown commit values when git lookup fails", () => {
+    const v = loadVersionWithExecSync(
+      { GIT_COMMIT: "unknown", BUILD_TIME: "unknown" },
+      () => {
+        throw new Error("git unavailable");
+      }
+    );
+    assert.equal(v.buildTime, null);
+    assert.equal(v.commit, "unknown");
+    assert.equal(v.commitShort, "unknown");
   });
 });
