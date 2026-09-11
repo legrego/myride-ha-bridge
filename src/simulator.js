@@ -44,7 +44,7 @@ const PM_ROUTE = [
 
 // Four fake buses doing a random walk around a generic suburban area. The two
 // that carry the student (BUS 099 AM, BUS 042 PM) instead follow a fixed route
-// (ping-ponging along it) so route distance/ETA are exercised.
+// once from start to finish, then idle at the final vertex.
 const FAKE_BUSES = [
   { id: "BUS 001", lat: 40.7128, lng: -74.0060, heading: 45,  speed: 22 },
   { id: "BUS 002", lat: 40.7148, lng: -74.0090, heading: 180, speed: 0  },
