@@ -27,13 +27,19 @@ VOLUME ["/data"]
 # API server port
 EXPOSE 8099
 
+# Build version info (injected by CI; matches the pushed image tag)
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+
 # Environment variable defaults (override via Portainer stack env)
 ENV NODE_ENV=production \
     LOG_LEVEL=info \
     API_PORT=8099 \
     TOKEN_FILE=/data/refresh_token \
     COGNITO_CLIENT_ID=3c5382gsq7g13djnejo98p2d98 \
-    COGNITO_REGION=us-east-1
+    COGNITO_REGION=us-east-1 \
+    GIT_COMMIT=$GIT_COMMIT \
+    BUILD_TIME=$BUILD_TIME
 
 USER bridge
 

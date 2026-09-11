@@ -10,6 +10,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { version } = require("./version");
 
 class ApiServer {
   /**
@@ -55,6 +56,7 @@ class ApiServer {
         console.log(`[API] Listening on http://0.0.0.0:${this.port}`);
         console.log(`[API]   POST /token — submit new refresh token`);
         console.log(`[API]   GET  /status — bridge health check`);
+        console.log(`[API]   GET  /version — build version info`);
         console.log(`[API]   GET  /snippet — token capture browser snippet`);
         resolve();
       });
@@ -76,6 +78,8 @@ class ApiServer {
         await this._handlePostToken(req, res);
       } else if (req.method === "GET" && req.url === "/status") {
         this._handleGetStatus(req, res);
+      } else if (req.method === "GET" && req.url === "/version") {
+        this._handleGetVersion(req, res);
       } else if (req.method === "GET" && req.url === "/snippet") {
         this._handleGetSnippet(req, res);
       } else {
@@ -137,6 +141,11 @@ class ApiServer {
     const status = this.getStatus();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(status, null, 2));
+  }
+
+  _handleGetVersion(_req, res) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(version, null, 2));
   }
 
   _readBody(req) {

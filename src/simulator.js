@@ -14,6 +14,7 @@
 
 const { ApiServer } = require("./api-server");
 const { MqttBridge } = require("./mqtt-bridge");
+const { version } = require("./version");
 
 // Home stop sits inside the fake buses' wander area so distance/approaching
 // sensors visibly change in sim. School is a bit further off.
@@ -267,6 +268,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
     },
     getStatus: () => ({
       bridge: "myride-ha-bridge",
+      version,
       simulate: true,
       tokenExpired: false,
       tokenExpiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString(),
