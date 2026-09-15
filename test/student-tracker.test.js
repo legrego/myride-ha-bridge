@@ -9,6 +9,8 @@ const {
   haversineMeters,
   parseLineString,
   buildRoutePolyline,
+  buildRoutePolylineWithSeq,
+  scheduledMinutesAt,
   cumulativeMetersAlong,
   nearestVertexCumulative,
   pickMyStop,
@@ -490,6 +492,69 @@ describe("buildRoutePolyline()", () => {
   });
 });
 
+describe("buildRoutePolylineWithSeq()", () => {
+  it("returns the polyline plus each seq's end vertex index", () => {
+    const { polyline, seqEnds } = buildRoutePolylineWithSeq(ROUTE_RUN.runDetail);
+    assert.equal(polyline.length, 4);
+    // Each direction segment drives *to* its stop, so seq N ends at the vertex it
+    // adds: seq0→index1, seq1→index2, seq2→index3 (index0 is the run start).
+    assert.deepEqual(seqEnds, [
+      { seq: 0, index: 1 },
+      { seq: 1, index: 2 },
+      { seq: 2, index: 3 },
+    ]);
+  });
+
+  it("skips rows with no geometry but still records seqs that added vertices", () => {
+    const { seqEnds } = buildRoutePolylineWithSeq([
+      { runStopSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.50, -72.0 41.51)" },
+      { runStopSeq: 1, directionGeomLine: null },
+      { runStopSeq: 2, directionGeomLine: "LINESTRING (-72.0 41.51, -72.0 41.52)" },
+    ]);
+    // seq1 contributed no vertices → not recorded; seq0→index1, seq2→index2.
+    assert.deepEqual(seqEnds, [
+      { seq: 0, index: 1 },
+      { seq: 2, index: 2 },
+    ]);
+  });
+});
+
+describe("scheduledMinutesAt()", () => {
+  // cum ascending; sched (minutes-since-midnight) ascending with it.
+  const checkpoints = [
+    { cum: 0, sched: 530 },    // 08:50
+    { cum: 1000, sched: 540 }, // 09:00
+    { cum: 2000, sched: 545 }, // 09:05
+  ];
+
+  it("interpolates linearly between checkpoints", () => {
+    assert.equal(scheduledMinutesAt(500, checkpoints), 535); // halfway 530→540
+    assert.equal(scheduledMinutesAt(1500, checkpoints), 542.5); // halfway 540→545
+  });
+
+  it("returns the exact scheduled time at a checkpoint", () => {
+    assert.equal(scheduledMinutesAt(1000, checkpoints), 540);
+  });
+
+  it("clamps below the first and above the last checkpoint", () => {
+    assert.equal(scheduledMinutesAt(-50, checkpoints), 530);
+    assert.equal(scheduledMinutesAt(9999, checkpoints), 545);
+  });
+
+  it("returns null for no checkpoints or a non-finite position", () => {
+    assert.equal(scheduledMinutesAt(500, []), null);
+    assert.equal(scheduledMinutesAt(NaN, checkpoints), null);
+  });
+
+  it("stays finite and never divides by zero on coincident checkpoints", () => {
+    // buildScheduleCheckpoints dedupes equal-cum points, but guard the raw input too.
+    const dup = [{ cum: 100, sched: 530 }, { cum: 100, sched: 540 }];
+    const r = scheduledMinutesAt(100, dup); // low-end clamp fires first → first sched
+    assert.equal(r, 530);
+    assert.ok(Number.isFinite(scheduledMinutesAt(150, dup)));
+  });
+});
+
 describe("cumulativeMetersAlong()", () => {
   it("starts at 0 and accumulates each leg length", () => {
     const poly = buildRoutePolyline(ROUTE_RUN.runDetail);
@@ -546,6 +611,18 @@ describe("normalizeStudent() route geometry enrichment", () => {
     assert.equal(stop.cumulativeAtStopMeters, stop.cumulativeMeters[3]);
   });
 
+  it("attaches schedule checkpoints (cumulative + scheduled minutes per seq)", () => {
+    const s = normalizeStudent(student, 9 * 60);
+    const cps = s.currentRun.myStop.scheduleCheckpoints;
+    const cum = s.currentRun.myStop.cumulativeMeters;
+    // seq0→08:50, seq1→08:55, seq2→09:01, positioned at each seq's end vertex.
+    assert.equal(cps.length, 3);
+    assert.deepEqual(cps.map((c) => c.sched), [8 * 60 + 50, 8 * 60 + 55, 9 * 60 + 1]);
+    assert.deepEqual(cps.map((c) => c.cum), [cum[1], cum[2], cum[3]]);
+    // sorted ascending by cumulative distance for interpolation
+    assert.ok(cps[0].cum < cps[1].cum && cps[1].cum < cps[2].cum);
+  });
+
   it("leaves route fields unset when the run has no geometry (haversine fallback)", () => {
     const noGeom = {
       ...student,
@@ -556,6 +633,7 @@ describe("normalizeStudent() route geometry enrichment", () => {
     assert.equal(stop.stopId, 1638);
     assert.equal(stop.routePolyline, undefined);
     assert.equal(stop.cumulativeAtStopMeters, undefined);
+    assert.equal(stop.scheduleCheckpoints, undefined);
   });
 
   it("leaves route fields unset when the stop pin is far off the route geometry", () => {

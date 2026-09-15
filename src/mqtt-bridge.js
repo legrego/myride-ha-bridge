@@ -12,13 +12,22 @@
  *   - binary_sensor.myride_student_<id>_substitute — whether today's bus is a substitute
  *   - sensor.myride_student_<id>_scheduled_time   — scheduled arrival at the student's stop
  *   - sensor.myride_student_<id>_stops_away       — scheduled stops remaining before the stop
+ *   - sensor.myride_student_<id>_delay            — minutes behind (+) / ahead (−) schedule
+ *   - sensor.myride_student_<id>_predicted_arrival — schedule-anchored predicted arrival (HH:MM)
  *
  * The device_tracker uses the "json_attributes" pattern so HA gets
  * latitude, longitude, and gps_accuracy in one payload.
  */
 
 const mqtt = require("mqtt");
-const { haversineMeters, nearestVertexCumulative } = require("./student-tracker");
+const {
+  haversineMeters,
+  nearestVertexCumulative,
+  scheduledMinutesAt,
+  formatMinutes,
+  nowMinutesInTimeZone,
+  DEFAULT_TIME_ZONE,
+} = require("./student-tracker");
 
 // Max snap distance (m) from the live bus to the nearest route vertex before we
 // treat the fix as off-route/GPS-noise and fall back to haversine.
@@ -49,9 +58,13 @@ class MqttBridge {
    * @param {string} [opts.topicPrefix="myride"]
    * @param {number} [opts.approachRadiusMeters=500] — distance within which the
    *   "Approaching My Stop" binary sensor turns ON.
+   * @param {string} [opts.timeZone] — district IANA timezone, used to evaluate the
+   *   live fix time against district-local schedule times for the delay model.
+   *   Invalid/absent values fall back to the default (see nowMinutesInTimeZone).
    */
-  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500 }) {
+  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500, timeZone = DEFAULT_TIME_ZONE }) {
     this.topicPrefix = topicPrefix;
+    this.timeZone = timeZone || DEFAULT_TIME_ZONE;
     // Guard against NaN/≤0 (e.g. a malformed APPROACH_RADIUS_METERS): an invalid
     // radius would make `meters <= radius` always false and silently disable the
     // "approaching" trigger. Fall back to the documented 500 m default.
@@ -273,6 +286,8 @@ class MqttBridge {
     const distanceTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
     const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
     const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
+    const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
+    const predictedArrivalTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -475,6 +490,38 @@ class MqttBridge {
         { retain: true }
       );
 
+      // Schedule delay (minutes behind (+) / ahead (−) schedule). No device_class:
+      // "duration" implies a non-negative span, but this value is signed.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_delay/config`,
+        JSON.stringify({
+          name: `${displayName} Schedule Delay`,
+          unique_id: `myride_student_${studentId}_delay`,
+          state_topic: delayTopic,
+          unit_of_measurement: "min",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:clock-alert-outline",
+        }),
+        { retain: true }
+      );
+
+      // Predicted arrival at my stop (district-local "HH:MM"), schedule-anchored:
+      // the scheduled stop time shifted by the bus's current delay.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_predicted_arrival/config`,
+        JSON.stringify({
+          name: `${displayName} Predicted Stop Arrival`,
+          unique_id: `myride_student_${studentId}_predicted_arrival`,
+          state_topic: predictedArrivalTopic,
+          availability,
+          device: deviceConfig,
+          icon: "mdi:clock-check-outline",
+        }),
+        { retain: true }
+      );
+
       // Approaching my stop (the automation trigger)
       this.client.publish(
         `homeassistant/binary_sensor/myride_student_${studentId}_approaching/config`,
@@ -633,6 +680,8 @@ class MqttBridge {
     this.client.publish(`${this.topicPrefix}/student/${studentId}/distance_to_stop`, "", { retain: true });
     this.client.publish(`${this.topicPrefix}/student/${studentId}/eta`, "", { retain: true });
     this.client.publish(`${this.topicPrefix}/student/${studentId}/approaching`, "OFF", { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/delay`, "", { retain: true });
+    this.client.publish(`${this.topicPrefix}/student/${studentId}/predicted_arrival`, "", { retain: true });
     // Drop the monotonic route-distance baseline: a new/absent stop means the
     // cumulative frame changed, so the previous bus position is no longer comparable.
     this.lastRouteCumByStudent.delete(studentId);
@@ -732,6 +781,11 @@ class MqttBridge {
     // Road-following distance when we have route geometry and a trustworthy snap;
     // otherwise fall back to crow-flies. Drives distance_to_stop and the ETA.
     const routeMeters = this._routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs);
+
+    // Schedule-anchored delay + predicted arrival (route mode only; needs the
+    // bus's cumulative position, which is derived from routeMeters).
+    this._publishDelay(studentId, myStop, routeMeters, nowMs);
+
     const effectiveMeters = routeMeters != null ? routeMeters : haversine;
     if (effectiveMeters == null) return;
 
@@ -749,6 +803,61 @@ class MqttBridge {
 
     const approaching = haversine != null && haversine <= this.approachRadiusMeters;
     this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
+  }
+
+  /**
+   * Compute and publish the schedule-anchored delay and predicted arrival time.
+   *
+   * The delay model compares where the bus actually is along the route to where
+   * the schedule says it should be by now: `S(cumBus)` is the scheduled time
+   * interpolated at the bus's cumulative route position, so `delay = now − S(cumBus)`
+   * (positive = behind schedule). The predicted arrival is then the student's own
+   * scheduled stop time shifted by that delay — assuming the bus holds its current
+   * offset for the rest of the run.
+   *
+   * Unlike the distance ÷ speed ETA, this stays valid while the bus is stopped
+   * (dwelling at a stop still means "N minutes behind"), and it is anchored to the
+   * timetable rather than an instantaneous speed reading. It requires route mode:
+   * a trustworthy route snap (`routeMeters != null`, which already passed the
+   * off-route and wrong-pass guards) and schedule checkpoints on the stop. When any
+   * input is missing, or the bus has reached/passed the stop, both topics are
+   * blanked so no stale value lingers.
+   *
+   * @param {string} studentId — sanitized id
+   * @param {object} myStop — normalized stop; needs cumulativeAtStopMeters,
+   *   stopTimeMinutes and scheduleCheckpoints (from attachRouteGeometry)
+   * @param {number|null} routeMeters — road distance bus→stop (null = no route mode)
+   * @param {number} [nowMs] — source timestamp (ms) of this fix
+   */
+  _publishDelay(studentId, myStop, routeMeters, nowMs) {
+    const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
+    const predictedTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
+
+    const checkpoints = myStop && myStop.scheduleCheckpoints;
+    const usable =
+      routeMeters != null &&
+      routeMeters > 0 && // 0 = at/after the stop → nothing left to predict
+      Number.isFinite(nowMs) &&
+      Number.isFinite(myStop.cumulativeAtStopMeters) &&
+      Number.isFinite(myStop.stopTimeMinutes) &&
+      Array.isArray(checkpoints) &&
+      checkpoints.length >= 2;
+
+    if (usable) {
+      const busCum = myStop.cumulativeAtStopMeters - routeMeters;
+      const schedAtBus = scheduledMinutesAt(busCum, checkpoints);
+      const nowMin = nowMinutesInTimeZone(new Date(nowMs), this.timeZone);
+      if (schedAtBus != null && nowMin != null) {
+        const delay = Math.round(nowMin - schedAtBus);
+        // Positive modulo so a delay that pushes past midnight wraps correctly.
+        const predictedMin = ((myStop.stopTimeMinutes + delay) % 1440 + 1440) % 1440;
+        this.client.publish(delayTopic, String(delay), { retain: true });
+        this.client.publish(predictedTopic, formatMinutes(predictedMin) || "unknown", { retain: true });
+        return;
+      }
+    }
+    this.client.publish(delayTopic, "", { retain: true });
+    this.client.publish(predictedTopic, "", { retain: true });
   }
 
   async disconnect() {

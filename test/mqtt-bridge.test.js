@@ -620,6 +620,14 @@ describe("MqttBridge", () => {
       routePolyline,
       cumulativeMeters,
       cumulativeAtStopMeters: 3000,
+      // Scheduled time at each vertex's cumulative position (minutes-since-midnight):
+      // 08:50, 08:54, 08:58, 09:01. The last matches stopTimeMinutes (541).
+      scheduleCheckpoints: [
+        { cum: 0, sched: 530 },
+        { cum: 1000, sched: 534 },
+        { cum: 2000, sched: 538 },
+        { cum: 3000, sched: 541 },
+      ],
     };
     const plainStop = {
       stopId: 1638, name: "MAPLE ST @ 3RD AVE", lat: 41.53, lng: -72.0,
@@ -769,6 +777,86 @@ describe("MqttBridge", () => {
       moved.currentRun = { ...moved.currentRun, runId: 800, activeVehicle: "BUS 057" };
       bridge.publishStudent(moved);
       assert.equal(bridge.lastRouteCumByStudent.has("2008416"), false);
+    });
+
+    // Schedule-anchored delay + predicted arrival. The default bridge timezone is
+    // America/New_York; the `at()` logTime is 2026-09-11T13:01:00Z (EDT, UTC−4) →
+    // 09:01 local = 541 min. A bus at vertex idx1 (cum 1000) is where the schedule
+    // put it at 08:54 (534 min), so it is 541 − 534 = 7 min behind → predicted
+    // arrival = scheduled 09:01 (541) + 7 = 09:08.
+    describe("schedule-anchored delay & predicted arrival", () => {
+      it("publishes discovery for delay and predicted_arrival", () => {
+        publishCalls.length = 0;
+        bridge.publishStudent(makeStudent(routeStop));
+        const topics = publishCalls.map((c) => c[0]);
+        assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_delay/config"));
+        assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_predicted_arrival/config"));
+      });
+
+      it("publishes signed delay and predicted arrival for a mid-route bus", () => {
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0)); // cum 1000
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "7");
+        assert.equal(
+          publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1],
+          "09:08"
+        );
+      });
+
+      it("reports a negative delay when the bus is ahead of schedule", () => {
+        // Bus at vertex idx1 (cum 1000, scheduled 08:54 = 534), but the fix time is
+        // 2026-09-11T12:52:00Z → 08:52 local = 532. now − S(cumBus) = 532 − 534 = −2
+        // (2 min early). Predicted = scheduled 09:01 (541) + (−2) = 539 = 08:59.
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(
+          makeStudent(routeStop),
+          at(41.51, -72.0, { logTime: "2026-09-11T12:52:00Z" })
+        );
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "-2");
+        assert.equal(
+          publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1],
+          "08:59"
+        );
+      });
+
+      it("still reports delay/predicted while the bus is stopped (unlike ETA)", () => {
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0, { speed: 0 }));
+        // ETA is blank when stopped, but the schedule-anchored delay is not.
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "7");
+        assert.equal(
+          publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1],
+          "09:08"
+        );
+      });
+
+      it("blanks delay/predicted when the stop has no route geometry", () => {
+        bridge.publishStudent(makeStudent(plainStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(plainStop), at(41.51, -72.0));
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "");
+      });
+
+      it("blanks delay/predicted once the bus reaches the stop (route distance 0)", () => {
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(routeStop), at(41.53, -72.0)); // at stop vertex
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "");
+      });
+
+      it("blanks delay/predicted when the bus is off-route (no trusted snap)", () => {
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98)); // off-route
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "");
+      });
     });
   });
 

@@ -127,19 +127,24 @@ function parseLineString(wkt) {
 
 /**
  * Concatenate a run's ordered `runDetail[].directionGeomLine` WKT segments into a
- * single [lat, lng] polyline in travel order, dropping the duplicate vertex where
- * one segment's end coincides with the next segment's start.
+ * single [lat, lng] polyline in travel order, and record where each `runStopSeq`
+ * ends along that polyline.
  *
  * `runDetail` is already ordered in travel order (ascending runStopSeq, then
- * directionSeq), so we walk it as-is. Rows with missing/unparseable geometry are
- * skipped. Returns [] when no geometry is present.
+ * directionSeq), so we walk it as-is, dropping the duplicate vertex where one
+ * segment's end coincides with the next segment's start. Each direction segment
+ * drives *toward* its stop, so the last vertex contributed while in a given
+ * `runStopSeq` is that stop's position along the route — captured in `seqEnds`
+ * (one `{ seq, index }` per seq, `index` into `polyline`). Rows with
+ * missing/unparseable geometry are skipped.
  *
  * @param {Array} runDetail
- * @returns {Array<[number, number]>}
+ * @returns {{polyline: Array<[number, number]>, seqEnds: Array<{seq:number,index:number}>}}
  */
-function buildRoutePolyline(runDetail) {
+function buildRoutePolylineWithSeq(runDetail) {
   const detail = Array.isArray(runDetail) ? runDetail : [];
   const polyline = [];
+  const seqEnds = [];
   for (const row of detail) {
     if (!row) continue;
     const seg = parseLineString(row.directionGeomLine);
@@ -149,8 +154,59 @@ function buildRoutePolyline(runDetail) {
       if (last && last[0] === pt[0] && last[1] === pt[1]) continue; // drop join dup
       polyline.push(pt);
     }
+    if (row.runStopSeq != null && polyline.length > 0) {
+      const index = polyline.length - 1;
+      const existing = seqEnds.find((e) => e.seq === row.runStopSeq);
+      if (existing) existing.index = index; // extend to this seq's latest vertex
+      else seqEnds.push({ seq: row.runStopSeq, index });
+    }
   }
-  return polyline;
+  return { polyline, seqEnds };
+}
+
+/**
+ * Concatenate a run's route into a single [lat, lng] polyline (see
+ * buildRoutePolylineWithSeq). Returns [] when no geometry is present.
+ *
+ * @param {Array} runDetail
+ * @returns {Array<[number, number]>}
+ */
+function buildRoutePolyline(runDetail) {
+  return buildRoutePolylineWithSeq(runDetail).polyline;
+}
+
+/**
+ * Interpolate the scheduled district-local time (minutes-since-midnight) at a
+ * given cumulative route distance, from a sorted list of schedule checkpoints.
+ *
+ * Each checkpoint is `{ cum, sched }` — a stop's cumulative meters from the run
+ * start and its scheduled time. Between checkpoints the scheduled time is linearly
+ * interpolated; outside the range it is clamped to the first/last checkpoint (so a
+ * bus before the first checkpoint or past the last reads that endpoint's time
+ * rather than an extrapolation). Returns null when there are no checkpoints or the
+ * position isn't finite.
+ *
+ * @param {number} cum — cumulative meters from the run start
+ * @param {Array<{cum:number, sched:number}>} checkpoints — sorted ascending by cum
+ * @returns {number|null} scheduled minutes-since-midnight (may be fractional)
+ */
+function scheduledMinutesAt(cum, checkpoints) {
+  if (!Array.isArray(checkpoints) || checkpoints.length === 0) return null;
+  if (!Number.isFinite(cum)) return null;
+  if (cum <= checkpoints[0].cum) return checkpoints[0].sched;
+  const last = checkpoints[checkpoints.length - 1];
+  if (cum >= last.cum) return last.sched;
+  for (let i = 1; i < checkpoints.length; i++) {
+    const a = checkpoints[i - 1];
+    const b = checkpoints[i];
+    if (cum <= b.cum) {
+      const span = b.cum - a.cum;
+      if (span <= 0) return a.sched; // coincident checkpoints — avoid /0
+      const t = (cum - a.cum) / span;
+      return a.sched + t * (b.sched - a.sched);
+    }
+  }
+  return last.sched;
 }
 
 /**
@@ -227,7 +283,7 @@ function nearestVertexCumulative(lat, lng, polyline, cumulative) {
  */
 function attachRouteGeometry(run, myStop) {
   if (!myStop || !Number.isFinite(myStop.lat) || !Number.isFinite(myStop.lng)) return;
-  const polyline = buildRoutePolyline(run && run.runDetail);
+  const { polyline, seqEnds } = buildRoutePolylineWithSeq(run && run.runDetail);
   if (polyline.length < 2) return; // need at least one leg for cumulative distance
   const cumulative = cumulativeMetersAlong(polyline);
   const stopSnap = nearestVertexCumulative(myStop.lat, myStop.lng, polyline, cumulative);
@@ -240,6 +296,53 @@ function attachRouteGeometry(run, myStop) {
   myStop.routePolyline = polyline;
   myStop.cumulativeMeters = cumulative;
   myStop.cumulativeAtStopMeters = stopSnap.cumulativeMeters;
+  // Schedule checkpoints: (cumulative meters, scheduled minutes) for each stop the
+  // run passes, so the publisher can interpolate "where the bus should be by now"
+  // and derive a schedule-anchored delay/predicted-arrival (see mqtt-bridge.js).
+  // Cumulative comes from where each runStopSeq ends along the route; the scheduled
+  // time from that seq's stopTime. Kept in memory on myStop; never published.
+  myStop.scheduleCheckpoints = buildScheduleCheckpoints(run && run.runDetail, seqEnds, cumulative);
+}
+
+/**
+ * Build the ordered schedule checkpoints used for schedule-anchored ETA.
+ *
+ * For each `runStopSeq` that has both a known route position (its end vertex, from
+ * buildRoutePolylineWithSeq) and a scheduled `stopTime`, emit `{ cum, sched }` —
+ * cumulative meters from the run start and scheduled minutes-since-midnight. The
+ * result is sorted ascending by `cum` and deduped so scheduledMinutesAt() can
+ * interpolate over it.
+ *
+ * @param {Array} runDetail
+ * @param {Array<{seq:number,index:number}>} seqEnds — per-seq end vertex indices
+ * @param {number[]} cumulative — per-vertex cumulative distance (from the polyline)
+ * @returns {Array<{cum:number, sched:number}>}
+ */
+function buildScheduleCheckpoints(runDetail, seqEnds, cumulative) {
+  const detail = Array.isArray(runDetail) ? runDetail : [];
+  // First scheduled time seen for each seq (all rows of a seq share the stopTime).
+  const schedBySeq = new Map();
+  for (const row of detail) {
+    if (row && row.runStopSeq != null && !schedBySeq.has(row.runStopSeq)) {
+      schedBySeq.set(row.runStopSeq, stopTimeToMinutes(row.stopTime));
+    }
+  }
+  const points = [];
+  for (const { seq, index } of seqEnds || []) {
+    const sched = schedBySeq.get(seq);
+    const cum = cumulative[index];
+    if (Number.isFinite(sched) && Number.isFinite(cum)) points.push({ cum, sched });
+  }
+  points.sort((a, b) => a.cum - b.cum);
+  // Drop exact-cum duplicates (keep the first), which would make interpolation
+  // ambiguous at that position.
+  const deduped = [];
+  for (const p of points) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && prev.cum === p.cum) continue;
+    deduped.push(p);
+  }
+  return deduped;
 }
 
 /**
@@ -598,6 +701,9 @@ module.exports = {
   haversineMeters,
   parseLineString,
   buildRoutePolyline,
+  buildRoutePolylineWithSeq,
+  buildScheduleCheckpoints,
+  scheduledMinutesAt,
   cumulativeMetersAlong,
   nearestVertexCumulative,
   attachRouteGeometry,
