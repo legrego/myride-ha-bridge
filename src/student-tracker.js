@@ -80,6 +80,72 @@ function formatMinutes(mins) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+const pad2 = (n) => String(n).padStart(2, "0");
+
+/**
+ * Signed minutes east of UTC for `date` observed in `timeZone` (e.g. −240 for
+ * US Eastern in summer). Computed by re-reading the instant's wall-clock parts in
+ * the zone and differencing against UTC — robust across Node/ICU builds, unlike
+ * parsing a formatted "GMT−04:00" string.
+ */
+function timeZoneOffsetMinutes(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    })
+      .formatToParts(date)
+      .map((p) => [p.type, p.value])
+  );
+  const asUTC = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    parts.hour === "24" ? 0 : Number(parts.hour), Number(parts.minute), Number(parts.second)
+  );
+  return Math.round((asUTC - date.getTime()) / 60000);
+}
+
+/**
+ * Build an ISO-8601 timestamp *with offset* for a district-local wall-clock time
+ * on the day of `nowMs`, suitable for a Home Assistant `timestamp` sensor.
+ *
+ * `totalMinutes` is minutes-since-midnight (may be negative or ≥1440; the day rolls
+ * accordingly). The date is taken from `nowMs` as observed in `timeZone`, and the
+ * zone's offset at that instant is applied (DST-correct via timeZoneOffsetMinutes).
+ * Seconds are zeroed so the value only changes on the minute — HA renders a stable
+ * "in N minutes" and the recorder isn't flooded. Returns null on invalid input.
+ *
+ * @param {number} nowMs — reference instant (ms) whose local date anchors the day
+ * @param {number} totalMinutes — target wall-clock minutes-since-midnight
+ * @param {string} timeZone — district IANA zone
+ * @returns {string|null} e.g. "2026-09-15T15:53:00-04:00"
+ */
+function districtLocalTimestamp(nowMs, totalMinutes, timeZone) {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(totalMinutes)) return null;
+  const zone = isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+  const now = new Date(nowMs);
+  const d = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+    })
+      .formatToParts(now)
+      .map((p) => [p.type, p.value])
+  );
+  const dayOffset = Math.floor(totalMinutes / 1440);
+  const mins = ((totalMinutes % 1440) + 1440) % 1440;
+  const base = new Date(Date.UTC(Number(d.year), Number(d.month) - 1, Number(d.day)));
+  base.setUTCDate(base.getUTCDate() + dayOffset);
+  const off = timeZoneOffsetMinutes(now, zone);
+  const sign = off < 0 ? "-" : "+";
+  const abs = Math.abs(off);
+  return (
+    `${base.getUTCFullYear()}-${pad2(base.getUTCMonth() + 1)}-${pad2(base.getUTCDate())}` +
+    `T${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}:00` +
+    `${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`
+  );
+}
+
 /**
  * Great-circle distance between two lat/lng points, in meters.
  * Returns null if any coordinate is missing/non-finite.
@@ -127,19 +193,24 @@ function parseLineString(wkt) {
 
 /**
  * Concatenate a run's ordered `runDetail[].directionGeomLine` WKT segments into a
- * single [lat, lng] polyline in travel order, dropping the duplicate vertex where
- * one segment's end coincides with the next segment's start.
+ * single [lat, lng] polyline in travel order, and record where each `runStopSeq`
+ * ends along that polyline.
  *
  * `runDetail` is already ordered in travel order (ascending runStopSeq, then
- * directionSeq), so we walk it as-is. Rows with missing/unparseable geometry are
- * skipped. Returns [] when no geometry is present.
+ * directionSeq), so we walk it as-is, dropping the duplicate vertex where one
+ * segment's end coincides with the next segment's start. Each direction segment
+ * drives *toward* its stop, so the last vertex contributed while in a given
+ * `runStopSeq` is that stop's position along the route — captured in `seqEnds`
+ * (one `{ seq, index }` per seq, `index` into `polyline`). Rows with
+ * missing/unparseable geometry are skipped.
  *
  * @param {Array} runDetail
- * @returns {Array<[number, number]>}
+ * @returns {{polyline: Array<[number, number]>, seqEnds: Array<{seq:number,index:number}>}}
  */
-function buildRoutePolyline(runDetail) {
+function buildRoutePolylineWithSeq(runDetail) {
   const detail = Array.isArray(runDetail) ? runDetail : [];
   const polyline = [];
+  const seqEnds = [];
   for (const row of detail) {
     if (!row) continue;
     const seg = parseLineString(row.directionGeomLine);
@@ -149,8 +220,59 @@ function buildRoutePolyline(runDetail) {
       if (last && last[0] === pt[0] && last[1] === pt[1]) continue; // drop join dup
       polyline.push(pt);
     }
+    if (row.runStopSeq != null && polyline.length > 0) {
+      const index = polyline.length - 1;
+      const existing = seqEnds.find((e) => e.seq === row.runStopSeq);
+      if (existing) existing.index = index; // extend to this seq's latest vertex
+      else seqEnds.push({ seq: row.runStopSeq, index });
+    }
   }
-  return polyline;
+  return { polyline, seqEnds };
+}
+
+/**
+ * Concatenate a run's route into a single [lat, lng] polyline (see
+ * buildRoutePolylineWithSeq). Returns [] when no geometry is present.
+ *
+ * @param {Array} runDetail
+ * @returns {Array<[number, number]>}
+ */
+function buildRoutePolyline(runDetail) {
+  return buildRoutePolylineWithSeq(runDetail).polyline;
+}
+
+/**
+ * Interpolate the scheduled district-local time (minutes-since-midnight) at a
+ * given cumulative route distance, from a sorted list of schedule checkpoints.
+ *
+ * Each checkpoint is `{ cum, sched }` — a stop's cumulative meters from the run
+ * start and its scheduled time. Between checkpoints the scheduled time is linearly
+ * interpolated; outside the range it is clamped to the first/last checkpoint (so a
+ * bus before the first checkpoint or past the last reads that endpoint's time
+ * rather than an extrapolation). Returns null when there are no checkpoints or the
+ * position isn't finite.
+ *
+ * @param {number} cum — cumulative meters from the run start
+ * @param {Array<{cum:number, sched:number}>} checkpoints — sorted ascending by cum
+ * @returns {number|null} scheduled minutes-since-midnight (may be fractional)
+ */
+function scheduledMinutesAt(cum, checkpoints) {
+  if (!Array.isArray(checkpoints) || checkpoints.length === 0) return null;
+  if (!Number.isFinite(cum)) return null;
+  if (cum <= checkpoints[0].cum) return checkpoints[0].sched;
+  const last = checkpoints[checkpoints.length - 1];
+  if (cum >= last.cum) return last.sched;
+  for (let i = 1; i < checkpoints.length; i++) {
+    const a = checkpoints[i - 1];
+    const b = checkpoints[i];
+    if (cum <= b.cum) {
+      const span = b.cum - a.cum;
+      if (span <= 0) return a.sched; // coincident checkpoints — avoid /0
+      const t = (cum - a.cum) / span;
+      return a.sched + t * (b.sched - a.sched);
+    }
+  }
+  return last.sched;
 }
 
 /**
@@ -227,7 +349,7 @@ function nearestVertexCumulative(lat, lng, polyline, cumulative) {
  */
 function attachRouteGeometry(run, myStop) {
   if (!myStop || !Number.isFinite(myStop.lat) || !Number.isFinite(myStop.lng)) return;
-  const polyline = buildRoutePolyline(run && run.runDetail);
+  const { polyline, seqEnds } = buildRoutePolylineWithSeq(run && run.runDetail);
   if (polyline.length < 2) return; // need at least one leg for cumulative distance
   const cumulative = cumulativeMetersAlong(polyline);
   const stopSnap = nearestVertexCumulative(myStop.lat, myStop.lng, polyline, cumulative);
@@ -240,6 +362,82 @@ function attachRouteGeometry(run, myStop) {
   myStop.routePolyline = polyline;
   myStop.cumulativeMeters = cumulative;
   myStop.cumulativeAtStopMeters = stopSnap.cumulativeMeters;
+  // Schedule checkpoints: (cumulative meters, scheduled minutes, seq) for each stop
+  // the run passes, so the publisher can interpolate "where the bus should be by now"
+  // and derive a schedule-anchored delay/predicted-arrival (see mqtt-bridge.js).
+  // Cumulative comes from where each runStopSeq ends along the route; the scheduled
+  // time from that seq's stopTime. Kept in memory on myStop; never published.
+  const checkpoints = buildScheduleCheckpoints(run && run.runDetail, seqEnds, cumulative);
+  myStop.scheduleCheckpoints = checkpoints;
+
+  // Route positions of the stops *before* the student's own stop, in travel order,
+  // so the publisher can derive a GPS-truthful "stops away" (count of these still
+  // ahead of the live bus). Derived from the route geometry (seqEnds) directly, NOT
+  // from scheduleCheckpoints: checkpoints drop any stop lacking a scheduled stopTime
+  // (and collapse coincident-cum stops), which would silently undercount physical
+  // stops. seqEnds is in travel order, so the stops before the student's own are the
+  // ones preceding it. Left unset when the student's stop isn't in the geometry
+  // (→ publisher reports unknown rather than a wrong count). In memory only.
+  const mySeq = stopIdToSeqMap(run && run.runDetail).get(myStop.stopId);
+  const myEndIdx = mySeq == null ? -1 : seqEnds.findIndex((e) => e.seq === mySeq);
+  if (myEndIdx >= 0) {
+    myStop.upstreamStopCums = seqEnds.slice(0, myEndIdx).map((e) => cumulative[e.index]);
+  }
+}
+
+/**
+ * Build the ordered schedule checkpoints used for schedule-anchored ETA.
+ *
+ * For each `runStopSeq` that has both a known route position (its end vertex, from
+ * buildRoutePolylineWithSeq) and a scheduled `stopTime`, emit `{ cum, sched }` —
+ * cumulative meters from the run start and scheduled minutes-since-midnight. The
+ * result is sorted ascending by `cum` and deduped so scheduledMinutesAt() can
+ * interpolate over it.
+ *
+ * @param {Array} runDetail
+ * @param {Array<{seq:number,index:number}>} seqEnds — per-seq end vertex indices
+ * @param {number[]} cumulative — per-vertex cumulative distance (from the polyline)
+ * @returns {Array<{cum:number, sched:number}>}
+ */
+function buildScheduleCheckpoints(runDetail, seqEnds, cumulative) {
+  const detail = Array.isArray(runDetail) ? runDetail : [];
+  // First scheduled time seen for each seq (all rows of a seq share the stopTime).
+  const schedBySeq = new Map();
+  for (const row of detail) {
+    if (row && row.runStopSeq != null && !schedBySeq.has(row.runStopSeq)) {
+      schedBySeq.set(row.runStopSeq, stopTimeToMinutes(row.stopTime));
+    }
+  }
+  const points = [];
+  for (const { seq, index } of seqEnds || []) {
+    const sched = schedBySeq.get(seq);
+    const cum = cumulative[index];
+    if (Number.isFinite(sched) && Number.isFinite(cum)) points.push({ cum, sched, seq });
+  }
+  points.sort((a, b) => a.cum - b.cum);
+  // Drop exact-cum duplicates (keep the first), which would make interpolation
+  // ambiguous at that position.
+  const deduped = [];
+  for (const p of points) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && prev.cum === p.cum) continue;
+    deduped.push(p);
+  }
+  return deduped;
+}
+
+/**
+ * Map each stopId in `runDetail` to its `runStopSeq` (first occurrence wins;
+ * all rows of a seq share the same stop).
+ */
+function stopIdToSeqMap(runDetail) {
+  const map = new Map();
+  for (const row of Array.isArray(runDetail) ? runDetail : []) {
+    if (row && row.stopId != null && row.runStopSeq != null && !map.has(row.stopId)) {
+      map.set(row.stopId, row.runStopSeq);
+    }
+  }
+  return map;
 }
 
 /**
@@ -436,6 +634,12 @@ function normalizeStudent(student, nowMinutes) {
     currentRun.stopSchedule = stops;
     currentRun.totalStops = totalStops;
     currentRun.myStopSeq = myStopSeq == null ? null : myStopSeq;
+    // Scheduled arrival at the student's own stop, as a district-local "HH:MM"
+    // wall-clock string (null when unknown). Published as a first-class sensor so
+    // a dashboard can show "scheduled 15:32" alongside the live ETA.
+    currentRun.scheduledTime = myStop ? formatMinutes(myStop.stopTimeMinutes) : null;
+    // "Stops away" is derived live from the bus's route position (myStop.upstreamStopCums,
+    // attached above), not the schedule clock — see MqttBridge._publishStopsAway().
   }
 
   return { uniqueId: uniqueId == null ? uniqueId : String(uniqueId), firstName, lastName, currentRun, todaysRuns };
@@ -561,12 +765,18 @@ module.exports = {
   haversineMeters,
   parseLineString,
   buildRoutePolyline,
+  buildRoutePolylineWithSeq,
+  buildScheduleCheckpoints,
+  scheduledMinutesAt,
   cumulativeMetersAlong,
   nearestVertexCumulative,
   attachRouteGeometry,
   pickMyStop,
   summarizeRunStops,
+  stopIdToSeqMap,
   nowMinutesInTimeZone,
+  timeZoneOffsetMinutes,
+  districtLocalTimestamp,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
 };

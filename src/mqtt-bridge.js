@@ -10,13 +10,44 @@
  *   - binary_sensor.myride_student_<id>_moving    — whether the bus is in motion
  *   - sensor.myride_student_<id>_bus              — which bus the student is on today
  *   - binary_sensor.myride_student_<id>_substitute — whether today's bus is a substitute
+ *   - sensor.myride_student_<id>_scheduled_time   — scheduled arrival at the student's stop (HH:MM)
+ *   - sensor.myride_student_<id>_stops_away       — stops still ahead of the bus before the stop (route-derived)
+ *   - sensor.myride_student_<id>_delay            — minutes behind (+) / ahead (−) schedule
+ *   - sensor.myride_student_<id>_predicted_arrival — schedule-anchored predicted arrival (timestamp)
  *
  * The device_tracker uses the "json_attributes" pattern so HA gets
  * latitude, longitude, and gps_accuracy in one payload.
  */
 
 const mqtt = require("mqtt");
-const { haversineMeters, nearestVertexCumulative } = require("./student-tracker");
+const {
+  haversineMeters,
+  nearestVertexCumulative,
+  scheduledMinutesAt,
+  nowMinutesInTimeZone,
+  districtLocalTimestamp,
+  DEFAULT_TIME_ZONE,
+} = require("./student-tracker");
+const { version } = require("./version");
+
+// Discovery `origin` block — surfaces the running build on the HA device page
+// (Settings → Devices) so "which bridge version is live" is answerable without a
+// dedicated diagnostic entity. sw_version carries the package version plus the
+// short commit when known.
+const ORIGIN = {
+  name: "myride-ha-bridge",
+  sw_version:
+    version.commitShort && version.commitShort !== "unknown"
+      ? `${version.version}+${version.commitShort}`
+      : version.version,
+  support_url: "https://github.com/legrego/myride-ha-bridge",
+};
+
+// Seconds after which HA marks a per-fix sensor (distance/eta/delay/predicted/
+// stops_away) unavailable if no new value arrives. Covers the failure mode where
+// SignalR stops delivering fixes while MQTT stays connected (the LWT can't) — long
+// enough not to flap in a GPS dead-zone, short enough not to show a stale value.
+const PER_FIX_EXPIRE_AFTER = 600;
 
 // Max snap distance (m) from the live bus to the nearest route vertex before we
 // treat the fix as off-route/GPS-noise and fall back to haversine.
@@ -47,9 +78,13 @@ class MqttBridge {
    * @param {string} [opts.topicPrefix="myride"]
    * @param {number} [opts.approachRadiusMeters=500] — distance within which the
    *   "Approaching My Stop" binary sensor turns ON.
+   * @param {string} [opts.timeZone] — district IANA timezone, used to evaluate the
+   *   live fix time against district-local schedule times for the delay model.
+   *   Invalid/absent values fall back to the default (see nowMinutesInTimeZone).
    */
-  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500 }) {
+  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500, timeZone = DEFAULT_TIME_ZONE }) {
     this.topicPrefix = topicPrefix;
+    this.timeZone = timeZone || DEFAULT_TIME_ZONE;
     // Guard against NaN/≤0 (e.g. a malformed APPROACH_RADIUS_METERS): an invalid
     // radius would make `meters <= radius` always false and silently disable the
     // "approaching" trigger. Fall back to the documented 500 m default.
@@ -247,8 +282,11 @@ class MqttBridge {
     // doesn't keep showing a previous day's stop or a stale "approaching=ON".
     if (!currentRun) {
       if (this.discoveredStudents.has(studentId)) {
-        this.client.publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "unknown", { retain: true });
-        this._clearStopProgress(studentId);
+        // "None" is HA's documented sentinel for the unknown state (an empty string
+        // is *ignored* on a numeric sensor, freezing its last value).
+        this.client.publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "None", { retain: true });
+        this.client.publish(`${this.topicPrefix}/student/${studentId}/scheduled_time`, "None", { retain: true });
+        this._clearStopProgress(studentId); // blanks stops_away + the per-fix topics
       }
       this.lastStopKeyByStudent.delete(studentId);
       return;
@@ -264,9 +302,13 @@ class MqttBridge {
     const movingTopic = `${this.topicPrefix}/student/${studentId}/moving`;
     const myStopTopic = `${this.topicPrefix}/student/${studentId}/my_stop`;
     const myStopAttributesTopic = `${this.topicPrefix}/student/${studentId}/my_stop_attributes`;
+    const scheduledTimeTopic = `${this.topicPrefix}/student/${studentId}/scheduled_time`;
+    const stopsAwayTopic = `${this.topicPrefix}/student/${studentId}/stops_away`;
     const distanceTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
     const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
     const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
+    const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
+    const predictedArrivalTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -282,6 +324,11 @@ class MqttBridge {
 
     if (!this.discoveredStudents.has(studentId)) {
       this.discoveredStudents.add(studentId);
+
+      // Upgrade migration: evict any retained per-fix values an older version left
+      // on the broker (distance/eta were published retained before this build), so
+      // they can't be replayed to HA on reconnect and held fresh by expire_after.
+      this._evictRetainedProgress(studentId);
 
       // Device tracker (provides map position; follows today's bus)
       this.client.publish(
@@ -395,6 +442,48 @@ class MqttBridge {
         { retain: true }
       );
 
+      // Scheduled arrival time at my stop (district-local "HH:MM" wall clock).
+      // Published as a plain string rather than a timestamp device_class: it is a
+      // recurring wall-clock time with no date, which HA has no device_class for
+      // (predicted_arrival is the concrete-instant companion). has_entity_name lets
+      // HA compose the friendly name from the device, so this entity carries only
+      // the short suffix.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_scheduled_time/config`,
+        JSON.stringify({
+          name: "Scheduled Stop Time",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_scheduled_time`,
+          state_topic: scheduledTimeTopic,
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:clock-start",
+        }),
+        { retain: true }
+      );
+
+      // Stops remaining before my stop — GPS-truthful (count of the run's stops
+      // still ahead of the live bus, from route geometry), published per fix.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_stops_away/config`,
+        JSON.stringify({
+          name: "Stops Away",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_stops_away`,
+          state_topic: stopsAwayTopic,
+          unit_of_measurement: "stops",
+          state_class: "measurement",
+          suggested_display_precision: 0,
+          expire_after: PER_FIX_EXPIRE_AFTER,
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:bus-stop",
+        }),
+        { retain: true }
+      );
+
       // Distance to my stop (meters)
       this.client.publish(
         `homeassistant/sensor/myride_student_${studentId}_distance_to_stop/config`,
@@ -411,8 +500,13 @@ class MqttBridge {
           suggested_unit_of_measurement: "m",
           device_class: "distance",
           state_class: "measurement",
+          // Per-fix value: expire so a frozen last-known distance can't linger after
+          // fixes stop arriving. (No has_entity_name — this is a pre-existing entity
+          // whose entity_id must stay stable.)
+          expire_after: PER_FIX_EXPIRE_AFTER,
           availability,
           device: deviceConfig,
+          origin: ORIGIN,
           icon: "mdi:map-marker-distance",
         }),
         { retain: true }
@@ -428,9 +522,52 @@ class MqttBridge {
           unit_of_measurement: "min",
           device_class: "duration",
           state_class: "measurement",
+          expire_after: PER_FIX_EXPIRE_AFTER,
           availability,
           device: deviceConfig,
+          origin: ORIGIN,
           icon: "mdi:clock-outline",
+        }),
+        { retain: true }
+      );
+
+      // Schedule delay (minutes behind (+) / ahead (−) schedule). No device_class:
+      // "duration" implies a non-negative span, but this value is signed.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_delay/config`,
+        JSON.stringify({
+          name: "Schedule Delay",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_delay`,
+          state_topic: delayTopic,
+          unit_of_measurement: "min",
+          state_class: "measurement",
+          suggested_display_precision: 0,
+          expire_after: PER_FIX_EXPIRE_AFTER,
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:clock-alert-outline",
+        }),
+        { retain: true }
+      );
+
+      // Predicted arrival at my stop — a concrete instant today (scheduled stop
+      // time shifted by the current delay), so it's a `timestamp` sensor: HA renders
+      // a native "in N minutes" countdown and it can anchor a Live Activity directly.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_predicted_arrival/config`,
+        JSON.stringify({
+          name: "Predicted Stop Arrival",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_predicted_arrival`,
+          state_topic: predictedArrivalTopic,
+          device_class: "timestamp",
+          expire_after: PER_FIX_EXPIRE_AFTER,
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:clock-check-outline",
         }),
         { retain: true }
       );
@@ -485,7 +622,7 @@ class MqttBridge {
 
     // My stop: name as state, schedule + position in run as attributes.
     const myStop = currentRun.myStop || null;
-    this.client.publish(myStopTopic, (myStop && myStop.name) || "unknown", { retain: true });
+    this.client.publish(myStopTopic, (myStop && myStop.name) || "None", { retain: true });
     this.client.publish(
       myStopAttributesTopic,
       JSON.stringify({
@@ -499,6 +636,16 @@ class MqttBridge {
         total_stops: currentRun.totalStops || null,
         schedule: currentRun.stopSchedule || [],
       }),
+      { retain: true }
+    );
+
+    // Scheduled arrival time: poll-derived (not per-location), so published here
+    // rather than in publishStudentLocation(). Retained (slow-moving, worth
+    // replaying on restart). "None" → HA unknown when unavailable. stops_away is
+    // NOT published here anymore — it's route-derived per fix (see _publishStopsAway).
+    this.client.publish(
+      scheduledTimeTopic,
+      (myStop && currentRun.scheduledTime) || "None",
       { retain: true }
     );
 
@@ -569,19 +716,44 @@ class MqttBridge {
   }
 
   /**
-   * Blank the live-progress topics (distance/ETA empty, approaching OFF) so no
-   * stale value from a previous stop lingers. Used when the stop is unknown or
-   * when the student's stop identity changes.
+   * Blank the live-progress topics so no stale value from a previous stop lingers.
+   * Used when the stop is unknown or the student's stop identity changes.
+   *
+   * The numeric/timestamp topics are set to "None" (HA's unknown sentinel — an
+   * empty payload would be *ignored* on those sensors, freezing the last value),
+   * and published non-retained like their live updates. `approaching` is a binary
+   * with a real OFF state, so it clears to OFF (retained).
    *
    * @param {string} studentId — sanitized id
    */
   _clearStopProgress(studentId) {
-    this.client.publish(`${this.topicPrefix}/student/${studentId}/distance_to_stop`, "", { retain: true });
-    this.client.publish(`${this.topicPrefix}/student/${studentId}/eta`, "", { retain: true });
-    this.client.publish(`${this.topicPrefix}/student/${studentId}/approaching`, "OFF", { retain: true });
+    const base = `${this.topicPrefix}/student/${studentId}`;
+    for (const topic of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
+      this.client.publish(`${base}/${topic}`, "None", { retain: false });
+    }
+    this.client.publish(`${base}/approaching`, "OFF", { retain: true });
     // Drop the monotonic route-distance baseline: a new/absent stop means the
     // cumulative frame changed, so the previous bus position is no longer comparable.
     this.lastRouteCumByStudent.delete(studentId);
+  }
+
+  /**
+   * One-time upgrade migration: delete any *retained* per-fix progress values left
+   * on the broker by an older bridge version, which published distance/eta (and, on
+   * pre-release builds of this branch, delay/predicted/stops_away) with retain:true.
+   * Those topics are now published non-retained; a lingering retained payload would
+   * be replayed to Home Assistant on reconnect and — with expire_after — treated as
+   * fresh for its full lease. A zero-byte *retained* publish clears the broker's
+   * retained store; HA ignores the empty payload (no state change). Run once per
+   * student when discovery is first published.
+   *
+   * @param {string} studentId — sanitized id
+   */
+  _evictRetainedProgress(studentId) {
+    const base = `${this.topicPrefix}/student/${studentId}`;
+    for (const topic of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
+      this.client.publish(`${base}/${topic}`, "", { retain: true });
+    }
   }
 
   /**
@@ -678,23 +850,126 @@ class MqttBridge {
     // Road-following distance when we have route geometry and a trustworthy snap;
     // otherwise fall back to crow-flies. Drives distance_to_stop and the ETA.
     const routeMeters = this._routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs);
+
+    // Schedule-anchored delay + predicted arrival, and route-truthful stops-away —
+    // all route mode only (need the bus's cumulative position, derived from routeMeters).
+    this._publishDelay(studentId, myStop, routeMeters, nowMs);
+    this._publishStopsAway(studentId, myStop, routeMeters);
+
     const effectiveMeters = routeMeters != null ? routeMeters : haversine;
-    if (effectiveMeters == null) return;
+    if (effectiveMeters == null) {
+      // Bad bus coordinates and no route reading — clear rather than freeze.
+      this.client.publish(distTopic, "None", { retain: false });
+      this.client.publish(etaTopic, "None", { retain: false });
+      return;
+    }
 
-    this.client.publish(distTopic, String(Math.round(effectiveMeters)), { retain: true });
+    // Per-fix values are non-retained (a retained value would replay stale on an HA
+    // restart) and paired with expire_after in discovery.
+    this.client.publish(distTopic, String(Math.round(effectiveMeters)), { retain: false });
 
-    // ETA estimate: distance / current speed. Only meaningful while moving;
-    // when stopped we leave ETA blank rather than emit Infinity.
+    // ETA estimate: distance / current speed. Only meaningful while moving; when
+    // stopped it is genuinely undefined, so publish "None" (→ unknown) rather than
+    // a frozen last value. The schedule-anchored delay/predicted stay valid instead.
     if (speedMph > 0) {
       const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
       const etaMin = Math.round(effectiveMeters / metersPerMin);
-      this.client.publish(etaTopic, String(etaMin), { retain: true });
+      this.client.publish(etaTopic, String(etaMin), { retain: false });
     } else {
-      this.client.publish(etaTopic, "", { retain: true });
+      this.client.publish(etaTopic, "None", { retain: false });
     }
 
     const approaching = haversine != null && haversine <= this.approachRadiusMeters;
     this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
+  }
+
+  /**
+   * Compute and publish route-truthful "stops away": how many of the run's stops
+   * are still ahead of the live bus but before the student's own stop.
+   *
+   * Uses `myStop.upstreamStopCums` (route positions of the stops before the
+   * student's, from attachRouteGeometry) and the bus's cumulative route position
+   * (`cumulativeAtStopMeters − routeMeters`): the answer is how many upstream stops
+   * still lie ahead of the bus. GPS-truthful and counts down live, unlike a
+   * schedule-clock estimate. Route mode only — publishes "None" (unknown) when the
+   * geometry isn't available, rather than a schedule-based guess.
+   *
+   * @param {string} studentId — sanitized id
+   * @param {object} myStop — normalized stop; needs upstreamStopCums + cumulativeAtStopMeters
+   * @param {number|null} routeMeters — road distance bus→stop (null = no route mode)
+   */
+  _publishStopsAway(studentId, myStop, routeMeters) {
+    const topic = `${this.topicPrefix}/student/${studentId}/stops_away`;
+    if (
+      routeMeters != null &&
+      myStop &&
+      Array.isArray(myStop.upstreamStopCums) &&
+      Number.isFinite(myStop.cumulativeAtStopMeters)
+    ) {
+      const busCum = myStop.cumulativeAtStopMeters - routeMeters;
+      const count = myStop.upstreamStopCums.filter((cum) => cum > busCum).length;
+      this.client.publish(topic, String(count), { retain: false });
+    } else {
+      this.client.publish(topic, "None", { retain: false });
+    }
+  }
+
+  /**
+   * Compute and publish the schedule-anchored delay and predicted arrival time.
+   *
+   * The delay model compares where the bus actually is along the route to where
+   * the schedule says it should be by now: `S(cumBus)` is the scheduled time
+   * interpolated at the bus's cumulative route position, so `delay = now − S(cumBus)`
+   * (positive = behind schedule). The predicted arrival is then the student's own
+   * scheduled stop time shifted by that delay — assuming the bus holds its current
+   * offset for the rest of the run.
+   *
+   * Unlike the distance ÷ speed ETA, this stays valid while the bus is stopped
+   * (dwelling at a stop still means "N minutes behind"), and it is anchored to the
+   * timetable rather than an instantaneous speed reading. It requires route mode:
+   * a trustworthy route snap (`routeMeters != null`, which already passed the
+   * off-route and wrong-pass guards) and schedule checkpoints on the stop. When any
+   * input is missing, or the bus has reached/passed the stop, both topics are
+   * blanked so no stale value lingers.
+   *
+   * @param {string} studentId — sanitized id
+   * @param {object} myStop — normalized stop; needs cumulativeAtStopMeters,
+   *   stopTimeMinutes and scheduleCheckpoints (from attachRouteGeometry)
+   * @param {number|null} routeMeters — road distance bus→stop (null = no route mode)
+   * @param {number} [nowMs] — source timestamp (ms) of this fix
+   */
+  _publishDelay(studentId, myStop, routeMeters, nowMs) {
+    const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
+    const predictedTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
+
+    const checkpoints = myStop && myStop.scheduleCheckpoints;
+    const usable =
+      routeMeters != null &&
+      routeMeters > 0 && // 0 = at/after the stop → nothing left to predict
+      Number.isFinite(nowMs) &&
+      Number.isFinite(myStop.cumulativeAtStopMeters) &&
+      Number.isFinite(myStop.stopTimeMinutes) &&
+      Array.isArray(checkpoints) &&
+      checkpoints.length >= 2;
+
+    if (usable) {
+      const busCum = myStop.cumulativeAtStopMeters - routeMeters;
+      const schedAtBus = scheduledMinutesAt(busCum, checkpoints);
+      const nowMin = nowMinutesInTimeZone(new Date(nowMs), this.timeZone);
+      if (schedAtBus != null && nowMin != null) {
+        const delay = Math.round(nowMin - schedAtBus);
+        // Predicted arrival as an ISO timestamp (device_class: timestamp): the
+        // scheduled stop time shifted by the delay, on this fix's district-local day.
+        const predictedTs = districtLocalTimestamp(
+          nowMs, myStop.stopTimeMinutes + delay, this.timeZone
+        );
+        this.client.publish(delayTopic, String(delay), { retain: false });
+        this.client.publish(predictedTopic, predictedTs || "None", { retain: false });
+        return;
+      }
+    }
+    this.client.publish(delayTopic, "None", { retain: false });
+    this.client.publish(predictedTopic, "None", { retain: false });
   }
 
   async disconnect() {

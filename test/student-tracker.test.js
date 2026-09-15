@@ -9,11 +9,16 @@ const {
   haversineMeters,
   parseLineString,
   buildRoutePolyline,
+  buildRoutePolylineWithSeq,
+  scheduledMinutesAt,
   cumulativeMetersAlong,
   nearestVertexCumulative,
   pickMyStop,
   summarizeRunStops,
+  stopIdToSeqMap,
   nowMinutesInTimeZone,
+  timeZoneOffsetMinutes,
+  districtLocalTimestamp,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
 } = require("../src/student-tracker");
@@ -360,12 +365,19 @@ describe("normalizeStudent() stop enrichment", () => {
     assert.equal(s.currentRun.stopSchedule.length, 4);
   });
 
+  it("attaches scheduledTime (HH:MM) to the current run", () => {
+    const s = normalizeStudent(student, 8 * 60 + 48);
+    assert.equal(s.currentRun.scheduledTime, "09:01"); // my stop's stopTime
+  });
+
   it("sets myStopSeq null when the stop isn't found in runDetail", () => {
     const noDetail = { ...student, runInfo: [{ ...AM_RUN_FIXTURE, runDetail: [] }] };
     const s = normalizeStudent(noDetail, 9 * 60);
     assert.equal(s.currentRun.myStop.stopId, 1638);
     assert.equal(s.currentRun.myStopSeq, null);
     assert.equal(s.currentRun.totalStops, 0);
+    // scheduledTime still resolves from the stop even without route geometry
+    assert.equal(s.currentRun.scheduledTime, "09:01");
   });
 
   it("tolerates a student with no runInfo (currentRun stays null)", () => {
@@ -442,6 +454,128 @@ describe("buildRoutePolyline()", () => {
   });
 });
 
+describe("buildRoutePolylineWithSeq()", () => {
+  it("returns the polyline plus each seq's end vertex index", () => {
+    const { polyline, seqEnds } = buildRoutePolylineWithSeq(ROUTE_RUN.runDetail);
+    assert.equal(polyline.length, 4);
+    // Each direction segment drives *to* its stop, so seq N ends at the vertex it
+    // adds: seq0→index1, seq1→index2, seq2→index3 (index0 is the run start).
+    assert.deepEqual(seqEnds, [
+      { seq: 0, index: 1 },
+      { seq: 1, index: 2 },
+      { seq: 2, index: 3 },
+    ]);
+  });
+
+  it("skips rows with no geometry but still records seqs that added vertices", () => {
+    const { seqEnds } = buildRoutePolylineWithSeq([
+      { runStopSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.50, -72.0 41.51)" },
+      { runStopSeq: 1, directionGeomLine: null },
+      { runStopSeq: 2, directionGeomLine: "LINESTRING (-72.0 41.51, -72.0 41.52)" },
+    ]);
+    // seq1 contributed no vertices → not recorded; seq0→index1, seq2→index2.
+    assert.deepEqual(seqEnds, [
+      { seq: 0, index: 1 },
+      { seq: 2, index: 2 },
+    ]);
+  });
+});
+
+describe("scheduledMinutesAt()", () => {
+  // cum ascending; sched (minutes-since-midnight) ascending with it.
+  const checkpoints = [
+    { cum: 0, sched: 530 },    // 08:50
+    { cum: 1000, sched: 540 }, // 09:00
+    { cum: 2000, sched: 545 }, // 09:05
+  ];
+
+  it("interpolates linearly between checkpoints", () => {
+    assert.equal(scheduledMinutesAt(500, checkpoints), 535); // halfway 530→540
+    assert.equal(scheduledMinutesAt(1500, checkpoints), 542.5); // halfway 540→545
+  });
+
+  it("returns the exact scheduled time at a checkpoint", () => {
+    assert.equal(scheduledMinutesAt(1000, checkpoints), 540);
+  });
+
+  it("clamps below the first and above the last checkpoint", () => {
+    assert.equal(scheduledMinutesAt(-50, checkpoints), 530);
+    assert.equal(scheduledMinutesAt(9999, checkpoints), 545);
+  });
+
+  it("returns null for no checkpoints or a non-finite position", () => {
+    assert.equal(scheduledMinutesAt(500, []), null);
+    assert.equal(scheduledMinutesAt(NaN, checkpoints), null);
+  });
+
+  it("stays finite and never divides by zero on coincident checkpoints", () => {
+    // buildScheduleCheckpoints dedupes equal-cum points, but guard the raw input too.
+    const dup = [{ cum: 100, sched: 530 }, { cum: 100, sched: 540 }];
+    const r = scheduledMinutesAt(100, dup); // low-end clamp fires first → first sched
+    assert.equal(r, 530);
+    assert.ok(Number.isFinite(scheduledMinutesAt(150, dup)));
+  });
+});
+
+describe("stopIdToSeqMap()", () => {
+  it("maps each stopId to its runStopSeq (first occurrence wins)", () => {
+    const m = stopIdToSeqMap(AM_RUN_FIXTURE.runDetail);
+    assert.equal(m.get(3704), 0); // seq 0 appears twice; first wins
+    assert.equal(m.get(1638), 14);
+    assert.equal(m.get(6024), 16);
+  });
+
+  it("tolerates missing/empty runDetail", () => {
+    assert.equal(stopIdToSeqMap(null).size, 0);
+    assert.equal(stopIdToSeqMap([]).size, 0);
+  });
+});
+
+describe("timeZoneOffsetMinutes()", () => {
+  it("returns the DST offset for US Eastern in summer (−240)", () => {
+    // 2026-09-11 is EDT (UTC−4).
+    assert.equal(timeZoneOffsetMinutes(new Date("2026-09-11T13:00:00Z"), "America/New_York"), -240);
+  });
+
+  it("returns the standard offset for US Eastern in winter (−300)", () => {
+    // 2026-01-15 is EST (UTC−5).
+    assert.equal(timeZoneOffsetMinutes(new Date("2026-01-15T13:00:00Z"), "America/New_York"), -300);
+  });
+
+  it("returns 0 for UTC", () => {
+    assert.equal(timeZoneOffsetMinutes(new Date("2026-09-11T13:00:00Z"), "UTC"), 0);
+  });
+});
+
+describe("districtLocalTimestamp()", () => {
+  it("builds an ISO timestamp with the zone's offset, on the fix's local day", () => {
+    // 2026-09-11T13:01:00Z is 09:01 EDT. Target 548 min = 09:08 → same day, −04:00.
+    const ms = Date.parse("2026-09-11T13:01:00Z");
+    assert.equal(districtLocalTimestamp(ms, 548, "America/New_York"), "2026-09-11T09:08:00-04:00");
+  });
+
+  it("uses the winter offset (−05:00) during EST", () => {
+    const ms = Date.parse("2026-01-15T13:01:00Z"); // 08:01 EST
+    assert.equal(districtLocalTimestamp(ms, 15 * 60 + 53, "America/New_York"), "2026-01-15T15:53:00-05:00");
+  });
+
+  it("rolls the date forward when minutes exceed a day", () => {
+    const ms = Date.parse("2026-09-11T13:01:00Z"); // local day 2026-09-11
+    // 1440 + 65 = next day 01:05.
+    assert.equal(districtLocalTimestamp(ms, 1440 + 65, "America/New_York"), "2026-09-12T01:05:00-04:00");
+  });
+
+  it("zeroes the seconds so it only changes on the minute", () => {
+    const ms = Date.parse("2026-09-11T13:01:37Z");
+    assert.match(districtLocalTimestamp(ms, 548, "America/New_York"), /:00[+-]\d{2}:\d{2}$/);
+  });
+
+  it("returns null on invalid input", () => {
+    assert.equal(districtLocalTimestamp(NaN, 548, "America/New_York"), null);
+    assert.equal(districtLocalTimestamp(Date.now(), NaN, "America/New_York"), null);
+  });
+});
+
 describe("cumulativeMetersAlong()", () => {
   it("starts at 0 and accumulates each leg length", () => {
     const poly = buildRoutePolyline(ROUTE_RUN.runDetail);
@@ -498,6 +632,51 @@ describe("normalizeStudent() route geometry enrichment", () => {
     assert.equal(stop.cumulativeAtStopMeters, stop.cumulativeMeters[3]);
   });
 
+  it("attaches schedule checkpoints (cumulative + scheduled minutes per seq)", () => {
+    const s = normalizeStudent(student, 9 * 60);
+    const cps = s.currentRun.myStop.scheduleCheckpoints;
+    const cum = s.currentRun.myStop.cumulativeMeters;
+    // seq0→08:50, seq1→08:55, seq2→09:01, positioned at each seq's end vertex.
+    assert.equal(cps.length, 3);
+    assert.deepEqual(cps.map((c) => c.sched), [8 * 60 + 50, 8 * 60 + 55, 9 * 60 + 1]);
+    assert.deepEqual(cps.map((c) => c.cum), [cum[1], cum[2], cum[3]]);
+    assert.deepEqual(cps.map((c) => c.seq), [0, 1, 2]);
+    // sorted ascending by cumulative distance for interpolation
+    assert.ok(cps[0].cum < cps[1].cum && cps[1].cum < cps[2].cum);
+  });
+
+  it("attaches upstreamStopCums for the stops before my stop (route-derived stops-away)", () => {
+    const s = normalizeStudent(student, 9 * 60);
+    const stop = s.currentRun.myStop;
+    // My stop is seq 2 (stopId 1638), the 3rd checkpoint → two stops precede it.
+    assert.deepEqual(stop.upstreamStopCums, [
+      stop.cumulativeMeters[1],
+      stop.cumulativeMeters[2],
+    ]);
+  });
+
+  it("counts an upstream stop that has geometry but no scheduled stopTime", () => {
+    // Regression: upstreamStopCums must come from route geometry, not from the
+    // schedule-filtered checkpoints (which drop the seq-1 stop for its null stopTime).
+    const missingTime = {
+      ...student,
+      runInfo: [{
+        ...ROUTE_RUN,
+        runDetail: [
+          { runStopSeq: 0, stopId: 3704, stopTime: "1900-01-01T08:50:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.50, -72.0 41.51)" },
+          { runStopSeq: 1, stopId: 5917, stopTime: null, directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.51, -72.0 41.52)" },
+          { runStopSeq: 2, stopId: 1638, stopTime: "1900-01-01T09:01:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.52, -72.0 41.53)" },
+        ],
+      }],
+    };
+    const s = normalizeStudent(missingTime, 9 * 60);
+    const stop = s.currentRun.myStop;
+    // Both seq-0 and seq-1 precede my stop (seq 2) → 2 upstream stops, even though
+    // seq-1 is absent from scheduleCheckpoints.
+    assert.deepEqual(stop.upstreamStopCums, [stop.cumulativeMeters[1], stop.cumulativeMeters[2]]);
+    assert.equal(stop.scheduleCheckpoints.length, 2); // seq-1 (null time) excluded here
+  });
+
   it("leaves route fields unset when the run has no geometry (haversine fallback)", () => {
     const noGeom = {
       ...student,
@@ -508,6 +687,7 @@ describe("normalizeStudent() route geometry enrichment", () => {
     assert.equal(stop.stopId, 1638);
     assert.equal(stop.routePolyline, undefined);
     assert.equal(stop.cumulativeAtStopMeters, undefined);
+    assert.equal(stop.scheduleCheckpoints, undefined);
   });
 
   it("leaves route fields unset when the stop pin is far off the route geometry", () => {

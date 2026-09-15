@@ -359,6 +359,7 @@ async function main() {
     password: config.mqtt.password,
     topicPrefix: config.mqtt.topicPrefix,
     approachRadiusMeters: config.mqtt.approachRadiusMeters,
+    timeZone: config.timeZone,
   });
 
   // Publish credential status sensor (problem = OFF means credentials are OK)
