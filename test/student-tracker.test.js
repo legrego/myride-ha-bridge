@@ -13,6 +13,7 @@ const {
   nearestVertexCumulative,
   pickMyStop,
   summarizeRunStops,
+  stopsAwayFromMine,
   nowMinutesInTimeZone,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
@@ -340,6 +341,43 @@ describe("summarizeRunStops()", () => {
   });
 });
 
+// ── Unit: stopsAwayFromMine ──────────────────────────────────────────────────
+
+describe("stopsAwayFromMine()", () => {
+  // seqs 0,1,14,16 — my stop is seq 14 (index 2), so seqs 0 and 1 precede it.
+  const preFixtureNow = (now) => summarizeRunStops(AM_RUN_FIXTURE, now).stops;
+
+  it("counts the not-yet-done stops before my stop", () => {
+    // now = 08:48 → seqs 0 (08:49) and 1 (08:49) both upcoming → 2 stops away
+    assert.equal(stopsAwayFromMine(preFixtureNow(8 * 60 + 48), 14), 2);
+  });
+
+  it("counts down as scheduled stop times pass", () => {
+    // now = 09:00 → seqs 0 and 1 (08:49) done → 0 stops away
+    assert.equal(stopsAwayFromMine(preFixtureNow(9 * 60), 14), 0);
+  });
+
+  it("uses stop position, not the raw runStopSeq value (sparse seqs)", () => {
+    // my stop is seq 14 but only the 3rd stop in the run; never returns 14
+    assert.equal(stopsAwayFromMine(preFixtureNow(8 * 60), 14), 2);
+  });
+
+  it("returns null when the stop isn't in the schedule", () => {
+    assert.equal(stopsAwayFromMine(preFixtureNow(9 * 60), 99), null);
+    assert.equal(stopsAwayFromMine(preFixtureNow(9 * 60), null), null);
+    assert.equal(stopsAwayFromMine(null, 14), null);
+  });
+
+  it("treats an unknown (null) done flag as not-yet-done", () => {
+    const stops = [
+      { seq: 0, done: null },
+      { seq: 1, done: false },
+      { seq: 2, done: true },
+    ];
+    assert.equal(stopsAwayFromMine(stops, 2), 2); // seq 0 (null) + seq 1 (false)
+  });
+});
+
 // ── Unit: normalizeStudent stop enrichment ────────────────────────────────────
 
 describe("normalizeStudent() stop enrichment", () => {
@@ -360,12 +398,22 @@ describe("normalizeStudent() stop enrichment", () => {
     assert.equal(s.currentRun.stopSchedule.length, 4);
   });
 
+  it("attaches scheduledTime (HH:MM) and stopsAway to the current run", () => {
+    // now = 08:48 → seqs 0 and 1 (08:49) upcoming → 2 stops before mine
+    const s = normalizeStudent(student, 8 * 60 + 48);
+    assert.equal(s.currentRun.scheduledTime, "09:01"); // my stop's stopTime
+    assert.equal(s.currentRun.stopsAway, 2);
+  });
+
   it("sets myStopSeq null when the stop isn't found in runDetail", () => {
     const noDetail = { ...student, runInfo: [{ ...AM_RUN_FIXTURE, runDetail: [] }] };
     const s = normalizeStudent(noDetail, 9 * 60);
     assert.equal(s.currentRun.myStop.stopId, 1638);
     assert.equal(s.currentRun.myStopSeq, null);
     assert.equal(s.currentRun.totalStops, 0);
+    // scheduledTime still resolves from the stop; stopsAway is null (no schedule)
+    assert.equal(s.currentRun.scheduledTime, "09:01");
+    assert.equal(s.currentRun.stopsAway, null);
   });
 
   it("tolerates a student with no runInfo (currentRun stays null)", () => {

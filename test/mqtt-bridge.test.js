@@ -389,6 +389,8 @@ describe("MqttBridge", () => {
         myStopSeq: 14,
         totalStops: 17,
         stopSchedule: [{ seq: 0, stopId: 3704, time: "08:49", done: true }],
+        scheduledTime: "09:01",
+        stopsAway: 3,
       },
       todaysRuns: [],
     });
@@ -431,6 +433,55 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent(null));
       const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop");
       assert.equal(stateCall[1], "unknown");
+    });
+
+    it("publishes discovery for scheduled_time and stops_away", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+      const topics = publishCalls.map((c) => c[0]);
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_scheduled_time/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_stops_away/config"));
+    });
+
+    it("publishes scheduled_time (HH:MM) and stops_away from the current run", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+      assert.equal(
+        publishCalls.find((c) => c[0] === "myride/student/2008416/scheduled_time")[1],
+        "09:01"
+      );
+      assert.equal(
+        publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1],
+        "3"
+      );
+    });
+
+    it("publishes stops_away '0' (not 'unknown') when zero stops remain", () => {
+      publishCalls.length = 0;
+      const s = makeStudent();
+      s.currentRun.stopsAway = 0;
+      bridge.publishStudent(s);
+      assert.equal(
+        publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1],
+        "0"
+      );
+    });
+
+    it("scheduled_time/stops_away are 'unknown' when the run has no myStop", () => {
+      publishCalls.length = 0;
+      // no myStop → normalizeStudent leaves scheduledTime null and stopsAway null
+      const s = makeStudent(null);
+      s.currentRun.scheduledTime = null;
+      s.currentRun.stopsAway = null;
+      bridge.publishStudent(s);
+      assert.equal(
+        publishCalls.find((c) => c[0] === "myride/student/2008416/scheduled_time")[1],
+        "unknown"
+      );
+      assert.equal(
+        publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1],
+        "unknown"
+      );
     });
 
     it("turns approaching ON and publishes distance/eta when the bus is near and moving", () => {

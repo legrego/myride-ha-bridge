@@ -10,6 +10,8 @@
  *   - binary_sensor.myride_student_<id>_moving    — whether the bus is in motion
  *   - sensor.myride_student_<id>_bus              — which bus the student is on today
  *   - binary_sensor.myride_student_<id>_substitute — whether today's bus is a substitute
+ *   - sensor.myride_student_<id>_scheduled_time   — scheduled arrival at the student's stop
+ *   - sensor.myride_student_<id>_stops_away       — scheduled stops remaining before the stop
  *
  * The device_tracker uses the "json_attributes" pattern so HA gets
  * latitude, longitude, and gps_accuracy in one payload.
@@ -248,6 +250,8 @@ class MqttBridge {
     if (!currentRun) {
       if (this.discoveredStudents.has(studentId)) {
         this.client.publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "unknown", { retain: true });
+        this.client.publish(`${this.topicPrefix}/student/${studentId}/scheduled_time`, "unknown", { retain: true });
+        this.client.publish(`${this.topicPrefix}/student/${studentId}/stops_away`, "unknown", { retain: true });
         this._clearStopProgress(studentId);
       }
       this.lastStopKeyByStudent.delete(studentId);
@@ -264,6 +268,8 @@ class MqttBridge {
     const movingTopic = `${this.topicPrefix}/student/${studentId}/moving`;
     const myStopTopic = `${this.topicPrefix}/student/${studentId}/my_stop`;
     const myStopAttributesTopic = `${this.topicPrefix}/student/${studentId}/my_stop_attributes`;
+    const scheduledTimeTopic = `${this.topicPrefix}/student/${studentId}/scheduled_time`;
+    const stopsAwayTopic = `${this.topicPrefix}/student/${studentId}/stops_away`;
     const distanceTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
     const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
     const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
@@ -395,6 +401,40 @@ class MqttBridge {
         { retain: true }
       );
 
+      // Scheduled arrival time at my stop (district-local "HH:MM" wall clock).
+      // Published as a plain string rather than a timestamp device_class: MyRide
+      // stop times carry no date or zone, so a robust ISO timestamp would mean
+      // synthesizing today's date + offset in the district TZ. The "HH:MM" form
+      // matches the schedule attribute and answers "what time is it due".
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_scheduled_time/config`,
+        JSON.stringify({
+          name: `${displayName} Scheduled Stop Time`,
+          unique_id: `myride_student_${studentId}_scheduled_time`,
+          state_topic: scheduledTimeTopic,
+          availability,
+          device: deviceConfig,
+          icon: "mdi:clock-start",
+        }),
+        { retain: true }
+      );
+
+      // Stops remaining before my stop (schedule-based, refreshed each poll)
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_stops_away/config`,
+        JSON.stringify({
+          name: `${displayName} Stops Away`,
+          unique_id: `myride_student_${studentId}_stops_away`,
+          state_topic: stopsAwayTopic,
+          unit_of_measurement: "stops",
+          state_class: "measurement",
+          availability,
+          device: deviceConfig,
+          icon: "mdi:bus-stop",
+        }),
+        { retain: true }
+      );
+
       // Distance to my stop (meters)
       this.client.publish(
         `homeassistant/sensor/myride_student_${studentId}_distance_to_stop/config`,
@@ -499,6 +539,20 @@ class MqttBridge {
         total_stops: currentRun.totalStops || null,
         schedule: currentRun.stopSchedule || [],
       }),
+      { retain: true }
+    );
+
+    // Scheduled arrival time + stops-away: poll-derived (not per-location), so
+    // published here rather than in publishStudentLocation(). "unknown" reads as
+    // HA's unknown state when the value isn't available.
+    this.client.publish(
+      scheduledTimeTopic,
+      (myStop && currentRun.scheduledTime) || "unknown",
+      { retain: true }
+    );
+    this.client.publish(
+      stopsAwayTopic,
+      currentRun.stopsAway == null ? "unknown" : String(currentRun.stopsAway),
       { retain: true }
     );
 

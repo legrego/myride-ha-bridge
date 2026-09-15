@@ -346,6 +346,36 @@ function summarizeRunStops(run, nowMinutes) {
 }
 
 /**
+ * How many stops the bus still has to make before it reaches the student's own
+ * stop.
+ *
+ * Counts the schedule entries that come *before* the student's stop in travel
+ * order and are not yet marked done. Like summarizeRunStops(), done/upcoming is
+ * schedule-based (scheduled stopTime vs. district-local "now"), so this refreshes
+ * each poll and counts down through the run as scheduled times pass — it is not
+ * GPS-accurate to the second, but it answers "how many stops until mine".
+ *
+ * Uses the stop's *position* in the ordered schedule (not its raw runStopSeq
+ * value), so it is correct even when MyRide's runStopSeq values are sparse
+ * (e.g. 0, 1, 14, 16). Returns null when the student's stop can't be located
+ * in the schedule.
+ *
+ * @param {Array} stops — ordered schedule from summarizeRunStops().stops
+ * @param {number|null} myStopSeq — runStopSeq of the student's own stop
+ * @returns {number|null}
+ */
+function stopsAwayFromMine(stops, myStopSeq) {
+  if (!Array.isArray(stops) || myStopSeq == null) return null;
+  const myIndex = stops.findIndex((s) => s.seq === myStopSeq);
+  if (myIndex < 0) return null;
+  let count = 0;
+  for (let i = 0; i < myIndex; i++) {
+    if (!stops[i].done) count += 1; // treat null (unknown) as not-yet-done
+  }
+  return count;
+}
+
+/**
  * Pick which run in runInfo[] is "current" based on the time of day.
  *
  * Strategy:
@@ -436,6 +466,13 @@ function normalizeStudent(student, nowMinutes) {
     currentRun.stopSchedule = stops;
     currentRun.totalStops = totalStops;
     currentRun.myStopSeq = myStopSeq == null ? null : myStopSeq;
+    // Scheduled arrival at the student's own stop, as a district-local "HH:MM"
+    // wall-clock string (null when unknown). Published as a first-class sensor so
+    // a dashboard can show "scheduled 15:32" alongside the live ETA.
+    currentRun.scheduledTime = myStop ? formatMinutes(myStop.stopTimeMinutes) : null;
+    // How many scheduled stops remain before the bus reaches the student's stop
+    // (schedule-based; null when the stop isn't in the schedule).
+    currentRun.stopsAway = stopsAwayFromMine(stops, currentRun.myStopSeq);
   }
 
   return { uniqueId: uniqueId == null ? uniqueId : String(uniqueId), firstName, lastName, currentRun, todaysRuns };
@@ -566,6 +603,7 @@ module.exports = {
   attachRouteGeometry,
   pickMyStop,
   summarizeRunStops,
+  stopsAwayFromMine,
   nowMinutesInTimeZone,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
