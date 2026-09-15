@@ -325,6 +325,11 @@ class MqttBridge {
     if (!this.discoveredStudents.has(studentId)) {
       this.discoveredStudents.add(studentId);
 
+      // Upgrade migration: evict any retained per-fix values an older version left
+      // on the broker (distance/eta were published retained before this build), so
+      // they can't be replayed to HA on reconnect and held fresh by expire_after.
+      this._evictRetainedProgress(studentId);
+
       // Device tracker (provides map position; follows today's bus)
       this.client.publish(
         `homeassistant/device_tracker/myride_student_${studentId}/config`,
@@ -730,6 +735,25 @@ class MqttBridge {
     // Drop the monotonic route-distance baseline: a new/absent stop means the
     // cumulative frame changed, so the previous bus position is no longer comparable.
     this.lastRouteCumByStudent.delete(studentId);
+  }
+
+  /**
+   * One-time upgrade migration: delete any *retained* per-fix progress values left
+   * on the broker by an older bridge version, which published distance/eta (and, on
+   * pre-release builds of this branch, delay/predicted/stops_away) with retain:true.
+   * Those topics are now published non-retained; a lingering retained payload would
+   * be replayed to Home Assistant on reconnect and — with expire_after — treated as
+   * fresh for its full lease. A zero-byte *retained* publish clears the broker's
+   * retained store; HA ignores the empty payload (no state change). Run once per
+   * student when discovery is first published.
+   *
+   * @param {string} studentId — sanitized id
+   */
+  _evictRetainedProgress(studentId) {
+    const base = `${this.topicPrefix}/student/${studentId}`;
+    for (const topic of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
+      this.client.publish(`${base}/${topic}`, "", { retain: true });
+    }
   }
 
   /**

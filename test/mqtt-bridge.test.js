@@ -443,6 +443,27 @@ describe("MqttBridge", () => {
       assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_stops_away/config"));
     });
 
+    it("evicts legacy retained per-fix values on first discovery (upgrade migration)", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+      for (const t of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
+        const evict = publishCalls.find(
+          (c) => c[0] === `myride/student/2008416/${t}` && c[1] === "" && c[2] && c[2].retain === true
+        );
+        assert.ok(evict, `expected a retained empty payload evicting stale ${t}`);
+      }
+    });
+
+    it("evicts only once — not again on the next poll for the same student", () => {
+      bridge.publishStudent(makeStudent()); // first sight → evict
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent()); // same student, no re-eviction
+      const evictions = publishCalls.filter(
+        (c) => c[0] === "myride/student/2008416/eta" && c[1] === "" && c[2] && c[2].retain === true
+      );
+      assert.equal(evictions.length, 0);
+    });
+
     it("publishes scheduled_time (HH:MM) from the current run", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
@@ -452,14 +473,17 @@ describe("MqttBridge", () => {
       );
     });
 
-    it("does not compute stops_away from the poll (route-derived per fix; poll only clears it)", () => {
+    it("does not compute stops_away from the poll (route-derived per fix; poll only clears/evicts it)", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
-      // The poll may clear stops_away to "None" (via _clearStopProgress on first
-      // sight) but must never publish a computed count — that's the per-fix path.
+      // The poll may clear stops_away to "None" (via _clearStopProgress) or evict a
+      // stale retained value with "" — but must never publish a computed count.
       const stateCalls = publishCalls.filter((c) => c[0] === "myride/student/2008416/stops_away");
       for (const call of stateCalls) {
-        assert.equal(call[1], "None", "poll must only ever clear stops_away, not compute it");
+        assert.ok(
+          call[1] === "None" || call[1] === "",
+          `poll must only clear/evict stops_away, not compute it (got "${call[1]}")`
+        );
       }
     });
 

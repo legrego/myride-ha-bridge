@@ -372,14 +372,16 @@ function attachRouteGeometry(run, myStop) {
 
   // Route positions of the stops *before* the student's own stop, in travel order,
   // so the publisher can derive a GPS-truthful "stops away" (count of these still
-  // ahead of the live bus). Determined by the stop's index in the ordered
-  // checkpoints — robust to sparse runStopSeq values. Left unset when the student's
-  // stop can't be located among the checkpoints (→ publisher reports unknown rather
-  // than a schedule-clock guess). In memory only; never published.
+  // ahead of the live bus). Derived from the route geometry (seqEnds) directly, NOT
+  // from scheduleCheckpoints: checkpoints drop any stop lacking a scheduled stopTime
+  // (and collapse coincident-cum stops), which would silently undercount physical
+  // stops. seqEnds is in travel order, so the stops before the student's own are the
+  // ones preceding it. Left unset when the student's stop isn't in the geometry
+  // (→ publisher reports unknown rather than a wrong count). In memory only.
   const mySeq = stopIdToSeqMap(run && run.runDetail).get(myStop.stopId);
-  const myIndex = mySeq == null ? -1 : checkpoints.findIndex((c) => c.seq === mySeq);
-  if (myIndex >= 0) {
-    myStop.upstreamStopCums = checkpoints.slice(0, myIndex).map((c) => c.cum);
+  const myEndIdx = mySeq == null ? -1 : seqEnds.findIndex((e) => e.seq === mySeq);
+  if (myEndIdx >= 0) {
+    myStop.upstreamStopCums = seqEnds.slice(0, myEndIdx).map((e) => cumulative[e.index]);
   }
 }
 

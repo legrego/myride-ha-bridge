@@ -655,6 +655,28 @@ describe("normalizeStudent() route geometry enrichment", () => {
     ]);
   });
 
+  it("counts an upstream stop that has geometry but no scheduled stopTime", () => {
+    // Regression: upstreamStopCums must come from route geometry, not from the
+    // schedule-filtered checkpoints (which drop the seq-1 stop for its null stopTime).
+    const missingTime = {
+      ...student,
+      runInfo: [{
+        ...ROUTE_RUN,
+        runDetail: [
+          { runStopSeq: 0, stopId: 3704, stopTime: "1900-01-01T08:50:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.50, -72.0 41.51)" },
+          { runStopSeq: 1, stopId: 5917, stopTime: null, directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.51, -72.0 41.52)" },
+          { runStopSeq: 2, stopId: 1638, stopTime: "1900-01-01T09:01:00", directionSeq: 0, directionGeomLine: "LINESTRING (-72.0 41.52, -72.0 41.53)" },
+        ],
+      }],
+    };
+    const s = normalizeStudent(missingTime, 9 * 60);
+    const stop = s.currentRun.myStop;
+    // Both seq-0 and seq-1 precede my stop (seq 2) → 2 upstream stops, even though
+    // seq-1 is absent from scheduleCheckpoints.
+    assert.deepEqual(stop.upstreamStopCums, [stop.cumulativeMeters[1], stop.cumulativeMeters[2]]);
+    assert.equal(stop.scheduleCheckpoints.length, 2); // seq-1 (null time) excluded here
+  });
+
   it("leaves route fields unset when the run has no geometry (haversine fallback)", () => {
     const noGeom = {
       ...student,
