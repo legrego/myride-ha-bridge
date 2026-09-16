@@ -752,6 +752,25 @@ describe("MqttBridge", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(290)), 0);
       });
 
+      it("re-acquires after a multi-frame off-route stretch (accept clock preserved)", () => {
+        // Accepted baseline at cum 1000.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
+        // The bus drives across a connector gap the polyline doesn't cover: several
+        // consecutive off-route frames at normal cadence. These hold, then exhaust
+        // the budget — but they must NOT advance the accept clock, or the eventual
+        // re-acquisition only gets one frame's forward allowance.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(15)), 2000); // held
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(30)), 2000); // held
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(45)), 2000); // held
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(60)), null);  // budget spent
+        // Bus rejoins the route far ahead (cum 3000) 75 s after the last accepted
+        // fix. Because off-route frames preserved the t0 accept clock, elapsed is 75 s
+        // → allowance 150 + 75×30 = 2400 m ≥ the 2000 m advance → re-acquired. (If the
+        // off-route holds had advanced the clock, elapsed would be 15 s → 600 m → the
+        // fix would be wrongly rejected and route mode lost for the rest of the run.)
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(75)), 0);
+      });
+
       it("falls back to a small allowance when the source timestamp is unknown", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
         // No nowMs → elapsed treated as 0 → only the 150 m base is allowed, so a

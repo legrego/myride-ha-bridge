@@ -846,17 +846,31 @@ class MqttBridge {
    * accepted position for a few frames, then give up.
    *
    * Returns the held road distance (from `prev.cum`) while the consecutive-failure
-   * count is within ROUTE_MAX_HELD_FIXES, otherwise null (→ haversine + None). Always
-   * advances the frame clock (`seenMs`) and the failure counter so a recurring
-   * wrong-pass snap stays cleared and can't accrue forward slack. Logs the snap
-   * distance for the first failures of a burst so the true off-route magnitude is
-   * visible (distinguishing "tolerance too tight" from "polyline omits the road").
+   * count is within ROUTE_MAX_HELD_FIXES, otherwise null (→ haversine + None).
+   *
+   * Timestamp handling differs by failure kind, and this matters for re-acquisition:
+   *  - **wrong-pass** advances the frame clock (`seenMs`), so the *next* frame's
+   *    forward allowance is measured frame-to-frame — a recurring close-but-wrong
+   *    snap at normal cadence can never accrue enough slack to be promoted.
+   *  - **off-route** *preserves* the last accepted timestamp. An off-route snap is
+   *    gated out by the distance check before the forward-allowance test, so it can
+   *    never be promoted regardless — advancing its clock only shrinks the window
+   *    for the eventual re-acquisition. The bus really does travel across a connector
+   *    gap, so re-acquisition must compare its total movement against the time since
+   *    the last *accepted* fix, not since the last off-route frame (otherwise a bus
+   *    that moved a kilometer off-route can never rejoin the route and route mode is
+   *    lost for the rest of the run).
+   * The failure counter is always advanced.
+   *
+   * Logs the snap distance for the first failures of a burst so the true off-route
+   * magnitude is visible (distinguishing "tolerance too tight" from "polyline omits
+   * the road").
    *
    * @param {string} studentId — sanitized id
    * @param {object} myStop — normalized stop (cumulativeAtStopMeters already finite)
    * @param {{cum:number, seenMs:number, failCount?:number}|undefined} prev
-   * @param {number|null} seenMs — frame clock to carry forward
-   * @param {string} reason — "off-route" | "wrong-pass" (for the diagnostic log)
+   * @param {number|null} seenMs — this frame's clock (used only for wrong-pass)
+   * @param {string} reason — "off-route" | "wrong-pass" (drives the clock + the log)
    * @param {number} distMeters — snap perpendicular distance (for the diagnostic log)
    * @returns {number|null}
    */
@@ -878,7 +892,10 @@ class MqttBridge {
         `consecutive=${failCount}${failCount <= ROUTE_MAX_HELD_FIXES ? " (holding)" : " (route mode off)"}`
       );
     }
-    this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs, failCount });
+    // Preserve the accepted timestamp across off-route holds (see doc above);
+    // advance it for wrong-pass so recurring close snaps can't accrue slack.
+    const nextSeenMs = reason === "off-route" ? prev.seenMs : seenMs;
+    this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs: nextSeenMs, failCount });
     if (failCount <= ROUTE_MAX_HELD_FIXES) {
       return Math.max(0, myStop.cumulativeAtStopMeters - prev.cum);
     }
