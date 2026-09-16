@@ -44,6 +44,7 @@ const { ApiServer } = require("./api-server");
 const { runSimulation } = require("./simulator");
 const { MyRideApi } = require("./myride-api");
 const { StudentTracker } = require("./student-tracker");
+const { FixOrderGuard } = require("./fix-order-guard");
 const { version } = require("./version");
 
 // ─── Configuration ───────────────────────────────────────────────
@@ -221,6 +222,9 @@ let refreshInterval = null;
 // Bus assetUniqueId → [students] whose current run rides that bus today.
 // Rebuilt on every student poll; used to route SignalR locations to students.
 const busToStudents = new Map();
+// Per-bus monotonic ordering guard: drops replayed/out-of-order SignalR fixes so a
+// superseded location can't rewind the bus's route position (see fix-order-guard.js).
+const fixOrderGuard = new FixOrderGuard();
 // Buses whose legacy per-bus HA entities have already been cleared (migration).
 const clearedBuses = new Set();
 
@@ -423,6 +427,19 @@ async function main() {
   // Wire SignalR location events → MQTT
   let locationCount = 0;
   signalrClient.on("location", (data) => {
+    // Monotonic guard: drop replayed/out-of-order fixes so a superseded location
+    // can't rewind the bus's route position (which bounces distance/eta/stops_away
+    // and flaps `moving`). Unparseable timestamps pass through — we can't compare.
+    if (!fixOrderGuard.accept(data.assetUniqueId, data.logTime)) {
+      if (config.logLevel === "debug") {
+        const lastMs = fixOrderGuard.lastAcceptedMs(data.assetUniqueId);
+        console.log(
+          `[Bus] Dropping out-of-order fix for ${data.assetUniqueId}: ` +
+          `${data.logTime} <= last ${lastMs != null ? new Date(lastMs).toISOString() : "n/a"}`
+        );
+      }
+      return;
+    }
     locationCount++;
     if (config.logLevel === "debug") {
       console.log(
