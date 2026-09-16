@@ -694,20 +694,23 @@ describe("MqttBridge", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t0), null);
       });
 
-      it("rejects a backward jump, keeping the baseline", () => {
+      it("holds the baseline on a backward jump, then re-acquires", () => {
         // Accept a forward reading at vertex idx2 (cum 2000).
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.52, -72.0, t0), 1000);
-        // A jump back to idx0 (cum 0) is > 50 m backward → rejected (null).
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t(30)), null);
+        // A jump back to idx0 (cum 0) is > 50 m backward → rejected, but within the
+        // hold budget it returns the held distance from the baseline (cum 2000 → 1000),
+        // not null and not the bad snap's value.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t(30)), 1000);
         // Baseline preserved: a plausible forward reading (~30 s later) is accepted.
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), 0);
       });
 
-      it("rejects a forward jump larger than the elapsed time can justify", () => {
+      it("holds the baseline on an implausible forward jump, then re-acquires", () => {
         // Accept an early reading at vertex idx0 (cum 0).
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
-        // +3000 m over ~30 s (≈100 m/s) is implausible → rejected as a wrong-pass snap.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), null);
+        // +3000 m over ~30 s (≈100 m/s) is implausible → rejected as a wrong-pass
+        // snap, but held at the baseline distance (cum 0 → 3000) within budget.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), 3000);
         // Baseline preserved: a plausible +1000 m step (~30 s) is accepted.
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t(60)), 2000);
       });
@@ -718,25 +721,29 @@ describe("MqttBridge", () => {
         assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0, t0), 3000);
       });
 
-      it("does not promote a recurring wrong-pass snap, but re-acquires after a real gap", () => {
+      it("does not promote a recurring wrong-pass snap: holds, gives up, then re-acquires", () => {
         // Baseline at the route start (cum 0).
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
         // A deterministic far-ahead snap (cum 3000) recurs at normal cadence. Each
         // frame's elapsed is only ~30 s, so it stays rejected — repetition alone
-        // never promotes it (the defect the count-based guard had).
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), null);
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), null);
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(90)), null);
+        // never promotes it (the defect the count-based guard had). For the first
+        // ROUTE_MAX_HELD_FIXES (3) rejections the baseline distance is held (3000)...
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), 3000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), 3000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(90)), 3000);
+        // ...then the hold budget is exhausted and it returns null (route mode off).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(120)), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(150)), null);
         // But after a genuine long gap (~140 s, e.g. a SignalR reconnect) the same
         // advance is time-plausible → adopted as the new baseline.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(230)), 0);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(290)), 0);
       });
 
       it("falls back to a small allowance when the source timestamp is unknown", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0), 3000);
         // No nowMs → elapsed treated as 0 → only the 150 m base is allowed, so a
-        // +1000 m step is rejected.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), null);
+        // +1000 m step is rejected — but held at the baseline distance (3000) within budget.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), 3000);
       });
     });
 
@@ -793,6 +800,46 @@ describe("MqttBridge", () => {
       moved.currentRun = { ...moved.currentRun, runId: 800, activeVehicle: "BUS 057" };
       bridge.publishStudent(moved);
       assert.equal(bridge.lastRouteCumByStudent.has("2008416"), false);
+    });
+
+    it("holds route-derived sensors through a transient off-route gap, then blanks", () => {
+      const last = (topic) => {
+        const hit = [...publishCalls].reverse().find((c) => c[0] === topic);
+        return hit ? hit[1] : undefined;
+      };
+      const distTopic = "myride/student/2008416/distance_to_stop";
+      const stopsTopic = "myride/student/2008416/stops_away";
+      const student = makeStudent(routeStop);
+      bridge.publishStudent(student);
+
+      // Accept a mid-route fix at cum 1000: route distance 2000, one upstream stop
+      // (cum 2000) still ahead → stops_away 1.
+      bridge.publishStudentLocation(student, at(41.51, -72.0, { logTime: "2026-09-11T13:01:00Z" }));
+      assert.equal(Number(last(distTopic)), 2000);
+      assert.equal(last(stopsTopic), "1");
+
+      // Now the bus snaps off-route (a thin connector stretch). Within the hold
+      // budget the route-derived values are held — distance stays the route 2000
+      // (NOT the ~2224 m haversine) and stops_away stays 1 (NOT "None").
+      for (let i = 1; i <= 3; i++) {
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(
+          student,
+          at(41.51, -71.98, { logTime: new Date(Date.parse("2026-09-11T13:01:00Z") + i * 30000).toISOString() })
+        );
+        assert.equal(Number(last(distTopic)), 2000, `held distance on failure #${i}`);
+        assert.equal(last(stopsTopic), "1", `held stops_away on failure #${i}`);
+      }
+
+      // A 4th consecutive failure exhausts the budget: distance falls back to
+      // haversine (>2200 m) and stops_away blanks to None (route mode off).
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(
+        student,
+        at(41.51, -71.98, { logTime: new Date(Date.parse("2026-09-11T13:01:00Z") + 4 * 30000).toISOString() })
+      );
+      assert.ok(Number(last(distTopic)) > 2200, `expected haversine fallback, got ${last(distTopic)}`);
+      assert.equal(last(stopsTopic), "None");
     });
 
     // Schedule-anchored delay + predicted arrival. The default bridge timezone is

@@ -221,6 +221,13 @@ let refreshInterval = null;
 // Bus assetUniqueId → [students] whose current run rides that bus today.
 // Rebuilt on every student poll; used to route SignalR locations to students.
 const busToStudents = new Map();
+// Bus assetUniqueId → last processed fix time (ms). SignalR replays superseded
+// NewLocation events (observed live: a fix's logTime alternating with an older
+// one over ~16 s), which drag the bus's route position backward and make
+// distance/moving/stops-away bounce. Drop any fix whose logTime isn't newer than
+// the last we processed for that bus. logTime is the vehicle's GPS fix time and is
+// monotonic per bus across reconnects/runs, so this never needs resetting.
+const lastFixMsByBus = new Map();
 // Buses whose legacy per-bus HA entities have already been cleared (migration).
 const clearedBuses = new Set();
 
@@ -423,6 +430,23 @@ async function main() {
   // Wire SignalR location events → MQTT
   let locationCount = 0;
   signalrClient.on("location", (data) => {
+    // Monotonic guard: drop replayed/out-of-order fixes so a superseded location
+    // can't rewind the bus's route position (which bounces distance/eta/stops_away
+    // and flaps `moving`). Unparseable timestamps pass through — we can't compare.
+    const fixMs = Date.parse(data.logTime);
+    if (Number.isFinite(fixMs)) {
+      const lastMs = lastFixMsByBus.get(data.assetUniqueId);
+      if (lastMs != null && fixMs <= lastMs) {
+        if (config.logLevel === "debug") {
+          console.log(
+            `[Bus] Dropping out-of-order fix for ${data.assetUniqueId}: ` +
+            `${data.logTime} <= last ${new Date(lastMs).toISOString()}`
+          );
+        }
+        return;
+      }
+      lastFixMsByBus.set(data.assetUniqueId, fixMs);
+    }
     locationCount++;
     if (config.logLevel === "debug") {
       console.log(

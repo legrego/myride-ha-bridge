@@ -68,6 +68,14 @@ const ROUTE_MONOTONIC_TOLERANCE_METERS = 50;
 // jitter when elapsed is ~0 or the timestamp is unknown.
 const ROUTE_FORWARD_BASE_METERS = 150;
 const ROUTE_MAX_PLAUSIBLE_MPS = 30; // ~67 mph, generous for a school bus
+// How many consecutive *transient* snap failures (off-route / wrong-pass) we ride
+// out by holding the last accepted route position before giving up and returning
+// null (→ haversine fallback + None on the route-only sensors). At the 15–30 s fix
+// cadence this is ~45–90 s of cover — long enough to bridge the connector-stretch
+// gaps where the polyline is thin, short enough that a genuinely stuck feed clears
+// quickly (and expire_after: 600 backstops a total feed death regardless). Missing
+// geometry is NOT a transient failure and is never held.
+const ROUTE_MAX_HELD_FIXES = 3;
 
 class MqttBridge {
   /**
@@ -98,12 +106,16 @@ class MqttBridge {
     // stopId alone is insufficient: the home stop shares one stopId across the AM
     // and PM runs, so only the run/active-vehicle change marks the transition.
     this.lastStopKeyByStudent = new Map();
-    // studentId → { cum, seenMs }: last accepted cumulative route distance of the
-    // bus (meters from the run start) and the source timestamp of the last frame
-    // seen (accepted or not). Used by _routeDistanceMeters to reject wrong-pass
-    // snaps on a loop/U-turn — backward to an earlier pass, or further forward than
-    // the elapsed source time can justify — while re-acquiring after a genuine long
-    // gap. Reset whenever stop progress is cleared (stop identity change / no run).
+    // studentId → { cum, seenMs, failCount }: last accepted cumulative route
+    // distance of the bus (meters from the run start), the source timestamp of the
+    // last frame seen (accepted or not), and how many consecutive transient snap
+    // failures have occurred since the last accepted fix. Used by
+    // _routeDistanceMeters to (a) reject wrong-pass snaps on a loop/U-turn —
+    // backward to an earlier pass, or further forward than the elapsed source time
+    // can justify — while re-acquiring after a genuine long gap, and (b) hold the
+    // last accepted position through a short burst of transient failures (off-route
+    // connector stretches / wrong-pass) before giving up. Reset whenever stop
+    // progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
@@ -759,11 +771,16 @@ class MqttBridge {
   /**
    * Road-following distance (meters) from the live bus to the student's stop,
    * using the precomputed route polyline on `myStop`. Returns null when route
-   * geometry is unavailable, the bus is off-route, or the reading fails the
-   * wrong-pass guard (backward, or further forward than the elapsed source time
-   * can justify) — in every such case the caller falls back to haversine.
+   * geometry is structurally unavailable. For a *transient* snap failure — the bus
+   * snapping off-route (a thin/gapped connector stretch of the polyline) or failing
+   * the wrong-pass guard — it holds the last accepted route position for up to
+   * ROUTE_MAX_HELD_FIXES consecutive failures before finally returning null; only
+   * then does the caller fall back to haversine and the route-only sensors blank.
+   * This keeps stops_away/delay/predicted_arrival (and a route-consistent distance)
+   * steady across the brief gaps where the polyline doesn't cover the road, instead
+   * of flipping to "unknown" on a single bad fix.
    *
-   * @param {string} studentId — sanitized id (keys the wrong-pass guard)
+   * @param {string} studentId — sanitized id (keys the wrong-pass/hold state)
    * @param {object} myStop — normalized stop; needs routePolyline, cumulativeMeters,
    *   cumulativeAtStopMeters (attached by StudentTracker.attachRouteGeometry)
    * @param {number} busLat
@@ -779,29 +796,32 @@ class MqttBridge {
       !Array.isArray(myStop.cumulativeMeters) ||
       !Number.isFinite(myStop.cumulativeAtStopMeters)
     ) {
-      return null;
+      return null; // structural: no geometry to hold against
     }
 
     const snap = nearestVertexCumulative(
       busLat, busLng, myStop.routePolyline, myStop.cumulativeMeters
     );
-    if (!snap) return null;
+    if (!snap) return null; // no vertices — structural, treat like missing geometry
 
-    // Off-route / GPS noise: the bus is nowhere near the route → don't trust the snap.
-    if (snap.distMeters > ROUTE_SNAP_MAX_METERS) return null;
-
-    const busCum = snap.cumulativeMeters;
     const prev = this.lastRouteCumByStudent.get(studentId);
     // Always record that we saw a frame at this time, so the *next* frame's forward
     // allowance is measured frame-to-frame (a rejected frame still advances the clock).
     const seenMs = Number.isFinite(nowMs) ? nowMs : (prev ? prev.seenMs : null);
+
+    // Off-route / GPS noise: the bus is nowhere near the route → don't trust the snap.
+    if (snap.distMeters > ROUTE_SNAP_MAX_METERS) {
+      return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "off-route", snap.distMeters);
+    }
+
+    const busCum = snap.cumulativeMeters;
 
     // Wrong-pass guard: the route can revisit streets (loops/U-turns), so a global
     // nearest-vertex snap can land on the wrong pass. Reject anything that moves
     // backward (never legitimate within a run) or further forward than the elapsed
     // source time plausibly allows. A genuine long gap justifies a large forward
     // jump (→ re-acquire); a deterministic wrong-pass snap at normal cadence never
-    // does (→ stays on haversine, frame after frame).
+    // does (→ held, then haversine, frame after frame).
     if (prev) {
       const elapsedSec =
         prev.seenMs != null && Number.isFinite(nowMs)
@@ -812,13 +832,50 @@ class MqttBridge {
         busCum < prev.cum - ROUTE_MONOTONIC_TOLERANCE_METERS ||
         busCum > prev.cum + allowedForward;
       if (rejected) {
-        this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs });
-        return null;
+        return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "wrong-pass", snap.distMeters);
       }
     }
-    this.lastRouteCumByStudent.set(studentId, { cum: busCum, seenMs });
 
+    // Accepted fix: reset the failure counter and record the new position.
+    this.lastRouteCumByStudent.set(studentId, { cum: busCum, seenMs, failCount: 0 });
     return Math.max(0, myStop.cumulativeAtStopMeters - busCum);
+  }
+
+  /**
+   * Handle a transient route-snap failure (off-route or wrong-pass): hold the last
+   * accepted position for a few frames, then give up.
+   *
+   * Returns the held road distance (from `prev.cum`) while the consecutive-failure
+   * count is within ROUTE_MAX_HELD_FIXES, otherwise null (→ haversine + None). Always
+   * advances the frame clock (`seenMs`) and the failure counter so a recurring
+   * wrong-pass snap stays cleared and can't accrue forward slack. Logs the snap
+   * distance for the first failures of a burst so the true off-route magnitude is
+   * visible (distinguishing "tolerance too tight" from "polyline omits the road").
+   *
+   * @param {string} studentId — sanitized id
+   * @param {object} myStop — normalized stop (cumulativeAtStopMeters already finite)
+   * @param {{cum:number, seenMs:number, failCount?:number}|undefined} prev
+   * @param {number|null} seenMs — frame clock to carry forward
+   * @param {string} reason — "off-route" | "wrong-pass" (for the diagnostic log)
+   * @param {number} distMeters — snap perpendicular distance (for the diagnostic log)
+   * @returns {number|null}
+   */
+  _holdOrClearRoute(studentId, myStop, prev, seenMs, reason, distMeters) {
+    const failCount = (prev && prev.failCount ? prev.failCount : 0) + 1;
+    // Log the first failures of a burst (through the give-up transition) so we
+    // capture the off-route distance without flooding on a long legitimate gap.
+    if (failCount <= ROUTE_MAX_HELD_FIXES + 1) {
+      console.warn(
+        `[Route] ${studentId} snap failure (${reason}) distMeters=${Math.round(distMeters)} ` +
+        `consecutive=${failCount}${prev && failCount <= ROUTE_MAX_HELD_FIXES ? " (holding)" : " (route mode off)"}`
+      );
+    }
+    if (!prev) return null; // nothing to hold against yet
+    this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs, failCount });
+    if (failCount <= ROUTE_MAX_HELD_FIXES) {
+      return Math.max(0, myStop.cumulativeAtStopMeters - prev.cum);
+    }
+    return null;
   }
 
   /**
