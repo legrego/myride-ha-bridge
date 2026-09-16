@@ -107,15 +107,19 @@ class MqttBridge {
     // and PM runs, so only the run/active-vehicle change marks the transition.
     this.lastStopKeyByStudent = new Map();
     // studentId → { cum, seenMs, failCount }: last accepted cumulative route
-    // distance of the bus (meters from the run start), the source timestamp of the
-    // last frame seen (accepted or not), and how many consecutive transient snap
-    // failures have occurred since the last accepted fix. Used by
-    // _routeDistanceMeters to (a) reject wrong-pass snaps on a loop/U-turn —
-    // backward to an earlier pass, or further forward than the elapsed source time
-    // can justify — while re-acquiring after a genuine long gap, and (b) hold the
-    // last accepted position through a short burst of transient failures (off-route
-    // connector stretches / wrong-pass) before giving up. Reset whenever stop
-    // progress is cleared (stop identity change / no run).
+    // distance of the bus (meters from the run start); the guard's *reference*
+    // timestamp against which the next frame's forward allowance is measured; and
+    // how many consecutive transient snap failures have occurred since the last
+    // accepted fix. seenMs is NOT simply "the last frame seen": it is advanced on an
+    // accepted fix and on a wrong-pass rejection (so a recurring wrong-pass snap
+    // can't accrue slack), but *preserved* across off-route holds (so re-acquisition
+    // after a connector gap measures from the last accepted fix — see
+    // _holdOrClearRoute). Used by _routeDistanceMeters to (a) reject wrong-pass snaps
+    // on a loop/U-turn — backward to an earlier pass, or further forward than the
+    // elapsed reference time can justify — while re-acquiring after a genuine long
+    // gap, and (b) hold the last accepted position through a short burst of transient
+    // failures (off-route connector stretches / wrong-pass) before giving up. Reset
+    // whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
@@ -805,8 +809,10 @@ class MqttBridge {
     if (!snap) return null; // no vertices — structural, treat like missing geometry
 
     const prev = this.lastRouteCumByStudent.get(studentId);
-    // Always record that we saw a frame at this time, so the *next* frame's forward
-    // allowance is measured frame-to-frame (a rejected frame still advances the clock).
+    // This frame's clock. It becomes the guard's reference timestamp on an accepted
+    // fix or a wrong-pass rejection; off-route holds preserve the previous reference
+    // instead (see _holdOrClearRoute). Falls back to the previous reference when the
+    // source timestamp is unknown.
     const seenMs = Number.isFinite(nowMs) ? nowMs : (prev ? prev.seenMs : null);
 
     // Off-route / GPS noise: the bus is nowhere near the route → don't trust the snap.
