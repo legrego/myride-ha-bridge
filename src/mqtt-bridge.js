@@ -861,16 +861,23 @@ class MqttBridge {
    * @returns {number|null}
    */
   _holdOrClearRoute(studentId, myStop, prev, seenMs, reason, distMeters) {
-    const failCount = (prev && prev.failCount ? prev.failCount : 0) + 1;
+    // No accepted baseline yet (e.g. the run begins off-route): there is nothing to
+    // hold against, and we deliberately persist no failure state here — so we also
+    // stay silent rather than re-log failure #1 on every fix. The diagnostic exists
+    // to measure off-route magnitude *during* a run; it starts once the route has
+    // been acquired at least once.
+    if (!prev) return null;
+
+    const failCount = (prev.failCount || 0) + 1;
     // Log the first failures of a burst (through the give-up transition) so we
-    // capture the off-route distance without flooding on a long legitimate gap.
+    // capture the off-route distance without flooding on a long legitimate gap. The
+    // count is persisted below (prev exists), so this rate-limit actually holds.
     if (failCount <= ROUTE_MAX_HELD_FIXES + 1) {
       console.warn(
         `[Route] ${studentId} snap failure (${reason}) distMeters=${Math.round(distMeters)} ` +
-        `consecutive=${failCount}${prev && failCount <= ROUTE_MAX_HELD_FIXES ? " (holding)" : " (route mode off)"}`
+        `consecutive=${failCount}${failCount <= ROUTE_MAX_HELD_FIXES ? " (holding)" : " (route mode off)"}`
       );
     }
-    if (!prev) return null; // nothing to hold against yet
     this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs, failCount });
     if (failCount <= ROUTE_MAX_HELD_FIXES) {
       return Math.max(0, myStop.cumulativeAtStopMeters - prev.cum);

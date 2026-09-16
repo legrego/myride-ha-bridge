@@ -694,6 +694,19 @@ describe("MqttBridge", () => {
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t0), null);
       });
 
+      it("persists no state while off-route before any baseline is acquired", () => {
+        // A run that starts off-route (never snapped on) must not accumulate hold
+        // state — otherwise every fix would re-log failure #1 forever. Repeated
+        // off-route fixes return null and leave the guard map empty until a real
+        // on-route fix establishes the baseline.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t0), null);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(30)), null);
+        assert.equal(bridge.lastRouteCumByStudent.has("s1"), false);
+        // Once on-route, a fix is accepted and becomes the baseline.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t(60)), 2000);
+        assert.equal(bridge.lastRouteCumByStudent.has("s1"), true);
+      });
+
       it("holds the baseline on a backward jump, then re-acquires", () => {
         // Accept a forward reading at vertex idx2 (cum 2000).
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.52, -72.0, t0), 1000);
