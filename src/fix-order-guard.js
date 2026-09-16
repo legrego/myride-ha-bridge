@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * fix-order-guard.js — Per-bus monotonic ordering guard for SignalR fixes.
  *
