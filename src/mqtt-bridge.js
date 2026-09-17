@@ -910,17 +910,31 @@ class MqttBridge {
       }
     }
 
-    // Plausibility invariant: the implied road distance to the stop can't be shorter
-    // than the crow-flies distance (a straight line is a lower bound on any road
-    // path). A snap that lands on the wrong part of the polyline — classically the
-    // route's end, reading ~0 m — while the bus is far away crow-flies violates this
-    // and is a confidently-wrong reading, so treat it as a transient failure (held,
-    // not accepted) rather than publishing "0 m / at the stop". The margin absorbs
-    // the bus + stop-pin snap errors. Non-"off-route" reason → the clock advances
-    // like a wrong-pass, so a recurring bad snap can't accrue forward slack.
+    // Plausibility invariant: while the bus is still approaching the stop, the implied
+    // road distance to it can't be shorter than the crow-flies distance (a straight
+    // line is a lower bound on any road path). A snap that lands on the wrong part of
+    // the polyline while the bus is far away crow-flies violates this and is a
+    // confidently-wrong reading, so treat it as a transient failure (held, not
+    // accepted) rather than publishing an "almost there" distance. The margin absorbs
+    // the bus + stop-pin snap errors. Non-"off-route" reason → the clock advances like
+    // a wrong-pass, so a recurring bad snap can't accrue forward slack.
+    //
+    // Only applied while `candidate > 0` (bus at/before the stop). Once the bus has
+    // legitimately passed the stop, busCum > cumulativeAtStopMeters clamps candidate to
+    // 0 — the documented at/after-stop state the downstream sensors expect — while its
+    // crow-flies distance keeps growing as it drives away, which would otherwise trip
+    // this invariant on every valid post-stop fix (holding, then blanking route mode
+    // for an on-route bus). A wrong snap *past* the stop already read 0 before this
+    // guard existed and is caught upstream by the wrong-pass guard (a jump from the
+    // last accepted position); this guard's job is the approaching-phase "almost
+    // there" lie, where it can never false-positive.
     const candidate = Math.max(0, myStop.cumulativeAtStopMeters - busCum);
     const straightLine = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
-    if (straightLine != null && candidate < straightLine - ROUTE_PLAUSIBILITY_MARGIN_METERS) {
+    if (
+      candidate > 0 &&
+      straightLine != null &&
+      candidate < straightLine - ROUTE_PLAUSIBILITY_MARGIN_METERS
+    ) {
       return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "implausible", snap.distMeters);
     }
 

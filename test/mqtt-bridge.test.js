@@ -831,6 +831,23 @@ describe("MqttBridge", () => {
       assert.equal(last("myride/student/2008416/stops_away"), "None");
     });
 
+    it("accepts a legitimate post-stop fix (bus past the stop) without tripping plausibility", () => {
+      // Stop pin sits mid-route at the cum-2000 vertex; the route continues to the
+      // cum-3000 vertex. A bus that has driven past the stop to the cum-3000 vertex is
+      // ~1112 m from the pin crow-flies with a route distance clamped to 0 — the valid
+      // "passed" state, NOT a bad snap. The plausibility guard (which only runs while
+      // the bus is still approaching) must leave it alone: route_snap_ok stays ON and
+      // distance reads 0 (at/after stop), rather than falling back to haversine.
+      const midRouteStop = { ...routeStop, lat: 41.52, lng: -72.0, cumulativeAtStopMeters: 2000 };
+      bridge.publishStudent(makeStudent(midRouteStop));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(midRouteStop), at(41.53, -72.0)); // past the stop
+
+      const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
+      assert.equal(last("myride/student/2008416/route_snap_ok"), "ON");
+      assert.equal(Number(last("myride/student/2008416/distance_to_stop")), 0);
+    });
+
     it("resets the wrong-pass guard when stop progress is cleared", () => {
       bridge.publishStudent(makeStudent(routeStop));
       bridge.publishStudentLocation(makeStudent(routeStop), at(41.52, -72.0)); // baseline 2000
