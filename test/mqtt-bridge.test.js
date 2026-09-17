@@ -875,6 +875,35 @@ describe("MqttBridge", () => {
       assert.equal(last("myride/student/2008416/stops_away"), "None");
     });
 
+    it("does not reuse a stale baseline for the post-stop exemption after route mode is lost", () => {
+      // Establish route mode, then blow the hold budget so route mode goes inactive
+      // but the baseline is deliberately kept (for re-acquisition math). A later fix
+      // that snaps past the stop clears the time-based wrong-pass allowance thanks to a
+      // long gap — but because no fix has been ACCEPTED since the outage, its zero
+      // candidate must NOT be waved through as "passed": it is rejected (haversine
+      // fallback, route_snap_ok OFF), not republished as a confident arrival.
+      const midRouteStop = { ...routeStop, lat: 41.52, lng: -72.0, cumulativeAtStopMeters: 2000 };
+      const s = makeStudent(midRouteStop);
+      bridge.publishStudent(s);
+      // Baseline at cum 1000 (approaching).
+      bridge.publishStudentLocation(s, at(41.51, -72.0, { logTime: "2026-09-11T13:01:00Z" }));
+      // Four off-route fixes: held ×3, then give up on the 4th → route mode inactive,
+      // baseline preserved (off-route holds keep the accepted clock at 13:01:00).
+      for (const sec of [15, 30, 45, 60]) {
+        const ss = String(sec).padStart(2, "0");
+        bridge.publishStudentLocation(s, at(41.51, -71.98, { logTime: `2026-09-11T13:01:${ss}Z` }));
+      }
+      publishCalls.length = 0;
+      // Long gap (5 min) → the wrong-pass forward allowance is huge, so a jump to the
+      // past-stop vertex (cum 3000) passes it. The exemption must still not apply.
+      bridge.publishStudentLocation(s, at(41.53, -72.0, { logTime: "2026-09-11T13:06:00Z" }));
+
+      const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
+      assert.equal(last("myride/student/2008416/route_snap_ok"), "OFF");
+      assert.ok(Number(last("myride/student/2008416/distance_to_stop")) > 1000);
+      assert.equal(last("myride/student/2008416/stops_away"), "None");
+    });
+
     it("resets the wrong-pass guard when stop progress is cleared", () => {
       bridge.publishStudent(makeStudent(routeStop));
       bridge.publishStudentLocation(makeStudent(routeStop), at(41.52, -72.0)); // baseline 2000

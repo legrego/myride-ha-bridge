@@ -921,20 +921,27 @@ class MqttBridge {
     //
     // A clamped-zero candidate (busCum ≥ cumulativeAtStopMeters) means the bus is
     // at/after the stop — the documented state the downstream sensors expect. That is
-    // legitimate only with an established baseline: when `prev` exists this fix already
-    // passed the wrong-pass guard above, so it reached here by continuous progression
-    // (the dwelling / just-passed case) and is exempt from the invariant, whose
-    // crow-flies distance would otherwise grow as the bus drives away and reject every
-    // valid post-stop fix. Without a baseline a zero candidate is indistinguishable
-    // from a wrong snap onto a distant part of the route (a run change clears the
-    // baseline, so the first fix against the new run's geometry has no `prev`), so it
-    // is NOT exempt — the invariant then rejects it unless the bus is physically near
-    // the stop (a genuine at-stop first fix passes, since 0 < haversine − MARGIN is
-    // false when haversine is small). For candidate > 0 (bus still approaching) the
-    // invariant always applies and can never false-positive.
+    // legitimate only when route mode is **currently active**: an active baseline means
+    // this fix reached here by continuous progression (it passed the wrong-pass guard
+    // above from a still-live position), so it's the dwelling / just-passed case and is
+    // exempt from the invariant, whose crow-flies distance would otherwise grow as the
+    // bus drives away and reject every valid post-stop fix.
+    //
+    // The active-mode check (not merely `prev != null`) matters: after the hold budget
+    // is exhausted `_holdOrClearRoute` KEEPS the last baseline (for re-acquisition math
+    // across a long off-route gap) but marks route mode inactive. A later snap past the
+    // stop can then clear the time-based wrong-pass allowance after a long gap, and a
+    // bare `prev != null` would wrongly treat that stale baseline as progression —
+    // republishing routeMeters=0 / route_snap_ok=ON for a possibly-mismatched route
+    // with no fix accepted since the outage. Gating on active route mode makes a
+    // zero candidate behave like the no-baseline case once route mode is lost: not
+    // exempt, so the invariant rejects it unless the bus is physically near the stop
+    // (0 < haversine − MARGIN is false when haversine is small). For candidate > 0
+    // (still approaching) the invariant always applies and can never false-positive.
     const candidate = Math.max(0, myStop.cumulativeAtStopMeters - busCum);
     const straightLine = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
-    const passedWithProgression = candidate === 0 && prev != null;
+    const passedWithProgression =
+      candidate === 0 && prev != null && this.routeModeActiveByStudent.get(studentId) === true;
     if (
       !passedWithProgression &&
       straightLine != null &&
