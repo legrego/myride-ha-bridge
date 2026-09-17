@@ -28,6 +28,15 @@ For a student with ID `2008416` you get:
 | `binary_sensor.myride_student_2008416_moving` | Binary Sensor | Is the bus in motion? |
 | `sensor.myride_student_2008416_bus` | Sensor | Which bus the student is on today |
 | `binary_sensor.myride_student_2008416_substitute` | Binary Sensor | Is today's bus a substitute? (ON = yes) |
+| `sensor.myride_student_2008416_my_stop` | Sensor | The student's own stop name |
+| `sensor.myride_student_2008416_scheduled_time` | Sensor | Scheduled stop time (district-local HH:MM) |
+| `sensor.myride_student_2008416_stops_away` | Sensor | Route-derived count of stops still ahead |
+| `sensor.myride_student_2008416_distance_to_stop` | Sensor | Distance to the student's stop |
+| `sensor.myride_student_2008416_eta` | Sensor | Speed-based ETA to the student's stop |
+| `sensor.myride_student_2008416_delay` | Sensor | Minutes behind/ahead of schedule |
+| `sensor.myride_student_2008416_predicted_arrival` | Sensor | Schedule-anchored predicted arrival timestamp |
+| `binary_sensor.myride_student_2008416_approaching` | Binary Sensor | Is the bus within the approach radius of the stop? |
+| `binary_sensor.myride_student_2008416_route_snap_ok` | Binary Sensor | Is stop-progress currently using trusted route mode? |
 | `binary_sensor.myride_bridge_credentials` | Binary Sensor | Credential problem alert (ON = expired) |
 
 > Raw per-bus entities (`device_tracker.myride_bus_*`) are no longer published. On
@@ -102,7 +111,7 @@ This is the one-time bootstrap step:
 
 1. Open **Chrome** and log in to [myridek12.tylerapp.com](https://myridek12.tylerapp.com)
 2. Open **DevTools** (F12) → **Console** tab
-3. Copy the contents of `capture-tokens.js` and paste into the console
+3. Copy the contents of `src/capture-tokens.js` (or fetch it from `http://YOUR_BRIDGE_HOST:8099/snippet`) and paste into the console
 4. Press **Enter**
 
 The script looks for Cognito tokens in sessionStorage (under a key starting with
@@ -129,7 +138,8 @@ MYRIDE_REFRESH_TOKEN=eyJjdHk...very_long_string...
 
 **Last resort — direct access token**: If you can't get a refresh token, grab the
 access token from any SignalR WebSocket URL in the Network tab (it's the
-`access_token=` query parameter). This works but expires in 60 minutes.
+`access_token=` query parameter). Set it as `MYRIDE_ACCESS_TOKEN`. This works but
+expires in 60 minutes.
 
 ### 3. Configure
 
@@ -169,7 +179,9 @@ BUS_FILTER=BUS 042
 ### 4. Run
 
 ```bash
-node index.js
+npm start
+# or
+node src/index.js
 ```
 
 Expected output:
@@ -186,7 +198,7 @@ Expected output:
 [MyRide]   Tenant: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 [MyRide]   Bus filter: BUS 042
 [MyRide] Connected! State: Connected
-[MQTT] Published HA discovery for BUS 042
+[MQTT] Published HA discovery for student 2008416
 [Bus] BUS 042 @ 40.6892,-74.0445 speed=26mph
 ```
 
@@ -204,7 +216,7 @@ Wants=network-online.target
 Type=simple
 User=homeassistant
 WorkingDirectory=/opt/myride-ha-bridge
-ExecStart=/usr/bin/node index.js
+ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=30
 EnvironmentFile=/opt/myride-ha-bridge/.env
@@ -225,8 +237,9 @@ FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --production
-COPY *.js ./
-CMD ["node", "index.js"]
+COPY src/ ./src/
+COPY public/ ./public/
+CMD ["node", "src/index.js"]
 ```
 
 ```bash
@@ -330,6 +343,11 @@ The status page shows:
 - **MQTT** — connected / disconnected
 - **Credentials** — valid / expired
 - **Token Expires** — when the current access token will need refreshing
+
+Additional helper endpoints:
+
+- **`GET /version`** — build/version metadata
+- **`GET /snippet`** — serves the browser token-capture snippet as plain text
 
 The page also has a text field to paste a new refresh token directly — handy when
 you're on your phone and don't want to `curl`.  It polls `/status` every 15 seconds
