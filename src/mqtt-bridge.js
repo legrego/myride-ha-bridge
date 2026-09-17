@@ -51,7 +51,37 @@ const PER_FIX_EXPIRE_AFTER = 600;
 
 // Max snap distance (m) from the live bus to the nearest route vertex before we
 // treat the fix as off-route/GPS-noise and fall back to haversine.
+//
+// Deliberately NOT widened: live off-route snap distances during a mismatched run
+// were observed at 233 → 798 m and *rising monotonically* (the bus driving steadily
+// away from a polyline that does not describe its path), which is the "route
+// geometry is wrong for this run" signature, not "tolerance too tight" (that would
+// be tens of meters). Raising this to accept those would make the confidently-wrong
+// snap in _routeDistanceMeters (a fix landing near the wrong part of the polyline)
+// *more* frequent, not less. The real defenses are the route-plausibility invariant
+// below and correct run selection (pickCurrentRun's late-bus grace).
 const ROUTE_SNAP_MAX_METERS = 150;
+// A route snap is provably wrong when the road distance it implies is shorter than
+// the crow-flies distance to the same stop: a straight line is a lower bound on any
+// road path, and the run's cumulative distances are haversine-computed along the
+// polyline (so in production road ≥ crow-flies always holds). This margin absorbs the
+// two vertex-snap errors (bus + stop pin, each ≤ the trust radii above ⇒ a 300 m
+// tight bound) plus GPS jitter / vertex granularity, so only a genuinely implausible
+// snap is rejected — e.g. a fix wrongly snapping to the polyline's end reads ~0 m
+// route distance while the bus is still kilometers away crow-flies. Unlike a raw
+// distance threshold this can never false-positive on a legitimate long final leg:
+// it is derived from a geometric invariant rather than a guessed cutoff.
+const ROUTE_PLAUSIBILITY_MARGIN_METERS = 500;
+// A schedule delay whose magnitude exceeds this (minutes) is not believable for a
+// school run and is treated as a bad reading (blanked) rather than published. It is
+// the signature of the bus being snapped against the wrong run's schedule (observed:
+// −395 min). Symmetric: a bus is no more plausibly 2 h early than 2 h late.
+const DELAY_SANITY_MAX_MINUTES = 120;
+// Throttle (ms) for the "route mode still off" diagnostic. The first failures of a
+// burst are logged as they happen (see _holdOrClearRoute); once route mode is off
+// this keeps a heartbeat of the off-route distance + loaded run so a *sustained*
+// outage isn't quieter in the logs than a brief one.
+const OFF_ROUTE_LOG_THROTTLE_MS = 60_000;
 // Allowed backward movement (m) in cumulative route distance between frames before
 // we reject the reading as a wrong-pass snap on a loop/U-turn. Backward motion is
 // never legitimate within a run (cumulative only grows; a genuine restart resets
@@ -121,6 +151,13 @@ class MqttBridge {
     // failures (off-route connector stretches / wrong-pass) before giving up. Reset
     // whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
+    // studentId → bool: whether the last fix was tracked in route mode (a trusted
+    // snap, held or accepted). Drives the route_snap_ok diagnostic sensor and the
+    // one-line "route mode acquired" log on each (re)acquisition.
+    this.routeModeActiveByStudent = new Map();
+    // studentId → ms of the last throttled "route mode still off" log, so a sustained
+    // off-route outage logs a heartbeat without flooding (see OFF_ROUTE_LOG_THROTTLE_MS).
+    this.lastOffRouteLogMsByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
     console.log(`[MQTT] Connecting to ${url}:${port} ...`);
@@ -325,6 +362,7 @@ class MqttBridge {
     const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
     const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
     const predictedArrivalTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
+    const routeSnapOkTopic = `${this.topicPrefix}/student/${studentId}/route_snap_ok`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -604,6 +642,32 @@ class MqttBridge {
         { retain: true }
       );
 
+      // Route Snap OK — diagnostic. ON when the live bus is being tracked on-route
+      // (a trusted route snap, or a held position within the hold budget); OFF when
+      // the snap failed and distance fell back to crow-flies; unavailable (via
+      // expire_after) when no fix is arriving at all. This is what distinguishes
+      // "briefly waiting for a snap" from "route data has been dead for the whole
+      // run" without reading the host logs. Non-retained + expire_after like the
+      // other per-fix topics.
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_route_snap_ok/config`,
+        JSON.stringify({
+          name: "Route Snap OK",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_route_snap_ok`,
+          state_topic: routeSnapOkTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          entity_category: "diagnostic",
+          expire_after: PER_FIX_EXPIRE_AFTER,
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:map-marker-path",
+        }),
+        { retain: true }
+      );
+
       console.log(`[MQTT] Published HA discovery for student ${displayName}`);
     }
 
@@ -748,9 +812,13 @@ class MqttBridge {
       this.client.publish(`${base}/${topic}`, "None", { retain: false });
     }
     this.client.publish(`${base}/approaching`, "OFF", { retain: true });
+    // No trusted route position while the stop is unknown/changing.
+    this.client.publish(`${base}/route_snap_ok`, "OFF", { retain: false });
     // Drop the monotonic route-distance baseline: a new/absent stop means the
     // cumulative frame changed, so the previous bus position is no longer comparable.
     this.lastRouteCumByStudent.delete(studentId);
+    this.routeModeActiveByStudent.delete(studentId);
+    this.lastOffRouteLogMsByStudent.delete(studentId);
   }
 
   /**
@@ -842,9 +910,63 @@ class MqttBridge {
       }
     }
 
+    // Plausibility invariant: while the bus is still approaching the stop, the implied
+    // road distance to it can't be shorter than the crow-flies distance (a straight
+    // line is a lower bound on any road path). A snap that lands on the wrong part of
+    // the polyline while the bus is far away crow-flies violates this and is a
+    // confidently-wrong reading, so treat it as a transient failure (held, not
+    // accepted) rather than publishing an "almost there" distance. The margin absorbs
+    // the bus + stop-pin snap errors. Non-"off-route" reason → the clock advances like
+    // a wrong-pass, so a recurring bad snap can't accrue forward slack.
+    //
+    // A clamped-zero candidate (busCum ≥ cumulativeAtStopMeters) means the bus is
+    // at/after the stop — the documented state the downstream sensors expect. That is
+    // legitimate only when route mode is **currently active**: an active baseline means
+    // this fix reached here by continuous progression (it passed the wrong-pass guard
+    // above from a still-live position), so it's the dwelling / just-passed case and is
+    // exempt from the invariant, whose crow-flies distance would otherwise grow as the
+    // bus drives away and reject every valid post-stop fix.
+    //
+    // The active-mode check (not merely `prev != null`) matters: after the hold budget
+    // is exhausted `_holdOrClearRoute` KEEPS the last baseline (for re-acquisition math
+    // across a long off-route gap) but marks route mode inactive. A later snap past the
+    // stop can then clear the time-based wrong-pass allowance after a long gap, and a
+    // bare `prev != null` would wrongly treat that stale baseline as progression —
+    // republishing routeMeters=0 / route_snap_ok=ON for a possibly-mismatched route
+    // with no fix accepted since the outage. Gating on active route mode makes a
+    // zero candidate behave like the no-baseline case once route mode is lost: not
+    // exempt, so the invariant rejects it unless the bus is physically near the stop
+    // (0 < haversine − MARGIN is false when haversine is small). For candidate > 0
+    // (still approaching) the invariant always applies and can never false-positive.
+    const candidate = Math.max(0, myStop.cumulativeAtStopMeters - busCum);
+    const straightLine = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
+    const passedWithProgression =
+      candidate === 0 && prev != null && this.routeModeActiveByStudent.get(studentId) === true;
+    if (
+      !passedWithProgression &&
+      straightLine != null &&
+      candidate < straightLine - ROUTE_PLAUSIBILITY_MARGIN_METERS
+    ) {
+      return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "implausible", snap.distMeters);
+    }
+
     // Accepted fix: reset the failure counter and record the new position.
     this.lastRouteCumByStudent.set(studentId, { cum: busCum, seenMs, failCount: 0 });
-    return Math.max(0, myStop.cumulativeAtStopMeters - busCum);
+    // Log once on each (re)acquisition of route mode, carrying the loaded run's
+    // identity + schedule window — this is what makes an AM-vs-PM route mismatch
+    // visible (the per-fix diagnostics key on the student id, identical for both runs).
+    if (!this.routeModeActiveByStudent.get(studentId)) {
+      this.routeModeActiveByStudent.set(studentId, true);
+      this.lastOffRouteLogMsByStudent.delete(studentId);
+      const ctx = myStop.runContext || {};
+      console.log(
+        `[Route] ${studentId} route mode acquired ` +
+        `run=${ctx.runId != null ? ctx.runId : "?"} bus=${ctx.busNumber || "?"} ` +
+        `stops=${ctx.totalStops != null ? ctx.totalStops : "?"} ` +
+        `window=${ctx.windowStart || "?"}–${ctx.windowEnd || "?"}`
+      );
+    }
+    return candidate;
   }
 
   /**
@@ -870,23 +992,39 @@ class MqttBridge {
    *
    * Logs the snap distance for the first failures of a burst so the true off-route
    * magnitude is visible (distinguishing "tolerance too tight" from "polyline omits
-   * the road").
+   * the road"), plus a throttled heartbeat while the outage persists — including the
+   * case where the route *never* acquires (no baseline), which is the sustained
+   * initial outage this diagnostic exists to investigate.
    *
    * @param {string} studentId — sanitized id
    * @param {object} myStop — normalized stop (cumulativeAtStopMeters already finite)
    * @param {{cum:number, seenMs:number, failCount?:number}|undefined} prev
    * @param {number|null} seenMs — this frame's clock (used only for wrong-pass)
-   * @param {string} reason — "off-route" | "wrong-pass" (drives the clock + the log)
+   * @param {string} reason — "off-route" | "wrong-pass" | "implausible" (drives the
+   *   clock + the log)
    * @param {number} distMeters — snap perpendicular distance (for the diagnostic log)
    * @returns {number|null}
    */
   _holdOrClearRoute(studentId, myStop, prev, seenMs, reason, distMeters) {
-    // No accepted baseline yet (e.g. the run begins off-route): there is nothing to
-    // hold against, and we deliberately persist no failure state here — so we also
-    // stay silent rather than re-log failure #1 on every fix. The diagnostic exists
-    // to measure off-route magnitude *during* a run; it starts once the route has
-    // been acquired at least once.
-    if (!prev) return null;
+    const runId = myStop.runContext ? myStop.runContext.runId : undefined;
+    // No accepted baseline yet (e.g. the run begins off-route and route mode never
+    // acquires). There is nothing to hold against and we deliberately create no
+    // baseline here — seeding the guard from an untrusted position would let a later
+    // wrong snap ride in as "progression". But we must NOT go silent: a run that is
+    // off-route from its first fix (the AM outage this instrument targets) would
+    // otherwise produce zero host logs. Emit a throttled, run-tagged heartbeat.
+    if (!prev) {
+      const now = Date.now();
+      const lastLog = this.lastOffRouteLogMsByStudent.get(studentId) || 0;
+      if (now - lastLog >= OFF_ROUTE_LOG_THROTTLE_MS) {
+        this.lastOffRouteLogMsByStudent.set(studentId, now);
+        console.warn(
+          `[Route] ${studentId} no route acquired (${reason}) ` +
+          `distMeters=${Math.round(distMeters)} run=${runId != null ? runId : "?"}`
+        );
+      }
+      return null;
+    }
 
     const failCount = (prev.failCount || 0) + 1;
     // Log the first failures of a burst (through the give-up transition) so we
@@ -895,11 +1033,32 @@ class MqttBridge {
     if (failCount <= ROUTE_MAX_HELD_FIXES + 1) {
       console.warn(
         `[Route] ${studentId} snap failure (${reason}) distMeters=${Math.round(distMeters)} ` +
+        `run=${runId != null ? runId : "?"} ` +
         `consecutive=${failCount}${failCount <= ROUTE_MAX_HELD_FIXES ? " (holding)" : " (route mode off)"}`
       );
+    } else {
+      // Route mode is already off and the burst warn has fired. Keep a throttled
+      // heartbeat so a *sustained* outage (which never re-enters the burst) isn't
+      // quieter in the logs than a brief one — with the current off-route distance
+      // and the loaded run for the wrong-route diagnosis.
+      const now = Date.now();
+      const lastLog = this.lastOffRouteLogMsByStudent.get(studentId) || 0;
+      if (now - lastLog >= OFF_ROUTE_LOG_THROTTLE_MS) {
+        this.lastOffRouteLogMsByStudent.set(studentId, now);
+        console.warn(
+          `[Route] ${studentId} route mode still off (${reason}) ` +
+          `distMeters=${Math.round(distMeters)} run=${runId != null ? runId : "?"} ` +
+          `consecutive=${failCount}`
+        );
+      }
+    }
+    // Once the hold budget is exhausted, route mode is off (drives route_snap_ok OFF
+    // and re-arms the "route mode acquired" log for the eventual re-acquisition).
+    if (failCount > ROUTE_MAX_HELD_FIXES) {
+      this.routeModeActiveByStudent.set(studentId, false);
     }
     // Preserve the accepted timestamp across off-route holds (see doc above);
-    // advance it for wrong-pass so recurring close snaps can't accrue slack.
+    // advance it for wrong-pass / implausible so recurring bad snaps can't accrue slack.
     const nextSeenMs = reason === "off-route" ? prev.seenMs : seenMs;
     this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs: nextSeenMs, failCount });
     if (failCount <= ROUTE_MAX_HELD_FIXES) {
@@ -937,6 +1096,14 @@ class MqttBridge {
     // Road-following distance when we have route geometry and a trustworthy snap;
     // otherwise fall back to crow-flies. Drives distance_to_stop and the ETA.
     const routeMeters = this._routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs);
+
+    // Diagnostic: is the bus being tracked on-route right now? routeMeters != null
+    // means a trusted or held snap (route mode); null means we fell back to crow-flies.
+    this.client.publish(
+      `${this.topicPrefix}/student/${studentId}/route_snap_ok`,
+      routeMeters != null ? "ON" : "OFF",
+      { retain: false }
+    );
 
     // Schedule-anchored delay + predicted arrival, and route-truthful stops-away —
     // all route mode only (need the bus's cumulative position, derived from routeMeters).
@@ -1045,6 +1212,20 @@ class MqttBridge {
       const nowMin = nowMinutesInTimeZone(new Date(nowMs), this.timeZone);
       if (schedAtBus != null && nowMin != null) {
         const delay = Math.round(nowMin - schedAtBus);
+        // Sanity guard: an implausibly large delay is the signature of snapping the
+        // bus against the wrong run's schedule (observed −395 min = a PM timetable
+        // read during an AM run). Blank both topics rather than publish a value no
+        // school run could produce; the route/run fixes should prevent this, this is
+        // the backstop.
+        if (Math.abs(delay) > DELAY_SANITY_MAX_MINUTES) {
+          console.warn(
+            `[Route] ${studentId} implausible delay ${delay} min ` +
+            `(|delay| > ${DELAY_SANITY_MAX_MINUTES}) — blanking delay/predicted_arrival`
+          );
+          this.client.publish(delayTopic, "None", { retain: false });
+          this.client.publish(predictedTopic, "None", { retain: false });
+          return;
+        }
         // Predicted arrival as an ISO timestamp (device_class: timestamp): the
         // scheduled stop time shifted by the delay, on this fix's district-local day.
         const predictedTs = districtLocalTimestamp(

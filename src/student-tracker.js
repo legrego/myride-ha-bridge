@@ -544,14 +544,41 @@ function summarizeRunStops(run, nowMinutes) {
 }
 
 /**
+ * Grace window (minutes) after a run's *scheduled* last stop during which that run
+ * is still considered current, so a late-running bus keeps its own run's geometry
+ * instead of flipping to the next upcoming run the instant the schedule window
+ * closes.
+ *
+ * Why this exists: a run's window is `[firstStopTime, lastStopTime]` from the
+ * student's own stops (schedule-based). A bus running behind schedule is still
+ * physically on that run *after* its last scheduled stop time — but with a bare
+ * window check "now" then falls between windows and pickCurrentRun would return the
+ * NEXT run (e.g. the PM dropoff during a late AM pickup). The still-live AM bus fix
+ * then gets snapped against PM route geometry, producing confidently-wrong
+ * delay/stops_away/distance (observed: a −395 min delay implying a ~15:47 next stop
+ * during a 09:xx AM run). The grace keeps the current run selected long enough to
+ * cover realistic lateness before deferring to the next run.
+ *
+ * 30 min comfortably covers observed lateness (~10 min) while staying far short of
+ * the multi-hour gap between AM and PM runs, so it can never bleed into the next
+ * window. It does not *know* the bus is late (pickCurrentRun stays a pure function
+ * of the schedule); the per-fix sanity guards in MqttBridge backstop the residual
+ * case of a bus later than the grace.
+ */
+const RUN_LATE_GRACE_MINUTES = 30;
+
+/**
  * Pick which run in runInfo[] is "current" based on the time of day.
  *
  * Strategy:
  *   1. Compute each run's window from its first/last stop times.
  *   2. Return the run whose window contains now-in-minutes.
- *   3. If no window contains now, return the next upcoming run.
- *   4. If all windows are in the past, return the most recent one.
- *   5. If there's only one run, return it.
+ *   3. If no window contains now but a run's window ended within
+ *      RUN_LATE_GRACE_MINUTES, return that (most-recently-ended) run — a late bus
+ *      is still on it.
+ *   4. Otherwise return the next upcoming run.
+ *   5. If all windows are in the past, return the most recent one.
+ *   6. If there's only one run, return it.
  *
  * `nowMinutes` is minutes-since-midnight in the district's timezone — the
  * caller is responsible for computing it in the correct zone (see
@@ -574,6 +601,16 @@ function pickCurrentRun(runInfo, nowMinutes) {
       return run;
     }
   }
+
+  // Recently-ended (late bus): window closed within the grace period. Prefer the
+  // most-recently-ended such run over the next upcoming one, so a bus finishing its
+  // run behind schedule keeps its own route geometry rather than adopting the next
+  // run's (which snaps the live bus against the wrong route). Bounded by
+  // RUN_LATE_GRACE_MINUTES so it never reaches into a genuinely later run.
+  const graceEligible = runs
+    .filter(({ end }) => end !== null && nowMinutes > end && nowMinutes <= end + RUN_LATE_GRACE_MINUTES)
+    .sort((a, b) => b.end - a.end);
+  if (graceEligible.length > 0) return graceEligible[0].run;
 
   // Next upcoming: earliest start after now
   const upcoming = runs
@@ -634,6 +671,24 @@ function normalizeStudent(student, nowMinutes) {
     currentRun.stopSchedule = stops;
     currentRun.totalStops = totalStops;
     currentRun.myStopSeq = myStopSeq == null ? null : myStopSeq;
+    // Stamp the run's identity + schedule window onto myStop (in-memory only, never
+    // published) so MqttBridge can log *which* run's geometry it is snapping the live
+    // bus against. This is what makes an AM-vs-PM route mismatch visible in the logs:
+    // the per-fix route diagnostics key on the student id alone, which is identical
+    // for both runs.
+    if (myStop) {
+      myStop.runContext = {
+        runId: currentRun.runId,
+        busNumber: currentRun.activeVehicle || currentRun.busNumber,
+        totalStops,
+        // The run's *selection* window — the stopsInfo-derived [windowStart, windowEnd]
+        // that pickCurrentRun compares "now" against — NOT the full runDetail span. The
+        // diagnostic exists to correlate a route snap with the run whose window expiry
+        // (+grace) selected it, so it must log that same window.
+        windowStart: formatMinutes(currentRun.windowStart),
+        windowEnd: formatMinutes(currentRun.windowEnd),
+      };
+    }
     // Scheduled arrival at the student's own stop, as a district-local "HH:MM"
     // wall-clock string (null when unknown). Published as a first-class sensor so
     // a dashboard can show "scheduled 15:32" alongside the live ETA.
@@ -779,4 +834,5 @@ module.exports = {
   districtLocalTimestamp,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
+  RUN_LATE_GRACE_MINUTES,
 };

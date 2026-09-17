@@ -117,6 +117,22 @@ describe("pickCurrentRun()", () => {
     const nowMinutes = 6 * 60; // 06:00 — before AM start (08:45)
     assert.equal(pickCurrentRun([AM_RUN, PM_RUN], nowMinutes), AM_RUN);
   });
+
+  it("keeps the AM run for a late bus within the grace period (regression: PM-during-AM)", () => {
+    // 09:15 — 5 min past the AM window end (09:10) but within RUN_LATE_GRACE_MINUTES.
+    // A bus running behind schedule is still on the AM run, so its live fixes must
+    // snap against AM geometry — NOT flip to PM (the field bug that produced a −395
+    // min delay from the PM timetable during an AM run).
+    const nowMinutes = 9 * 60 + 15;
+    assert.equal(pickCurrentRun([AM_RUN, PM_RUN], nowMinutes), AM_RUN);
+  });
+
+  it("flips to the next run once the grace period has elapsed", () => {
+    // 09:45 — past AM end (09:10) + RUN_LATE_GRACE_MINUTES (30). The AM run is done
+    // for real, so the next upcoming (PM) run is current again.
+    const nowMinutes = 9 * 60 + 45;
+    assert.equal(pickCurrentRun([AM_RUN, PM_RUN], nowMinutes), PM_RUN);
+  });
 });
 
 // ── Unit: isValidTimeZone ─────────────────────────────────────────────────────
