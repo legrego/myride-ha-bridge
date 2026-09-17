@@ -811,17 +811,24 @@ describe("MqttBridge", () => {
       assert.ok(dist > 2000, `expected haversine (>2000m), got ${dist}`);
     });
 
-    it("keeps approaching on haversine even when route distance is within the radius", () => {
-      // Route says 400 m remaining (< 500 m radius) but the bus is physically
-      // ~2224 m from the pin → approaching must be OFF (driven by haversine).
+    it("rejects an implausible snap (route ≪ crow-flies) and falls back to haversine", () => {
+      // Field failure signature: the snap would put the bus 400 m from the stop by
+      // road (< the 500 m radius) while it is ~2224 m away crow-flies. A road path
+      // can't be shorter than a straight line, so this is a confidently-wrong snap
+      // (classically a fix landing on the wrong part of the polyline). The route
+      // reading is rejected: distance_to_stop falls back to haversine, the route-only
+      // sensors blank, route_snap_ok is OFF, and approaching (always haversine) is OFF.
       const shortRouteStop = { ...routeStop, cumulativeAtStopMeters: 1400 };
       bridge.publishStudent(makeStudent(shortRouteStop));
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(shortRouteStop), at(41.51, -72.0));
 
-      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
-      assert.equal(dist, 400); // route distance used for the sensor
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
+      const dist = Number(last("myride/student/2008416/distance_to_stop"));
+      assert.ok(dist > 2000, `expected haversine fallback (~2224 m), got ${dist}`);
+      assert.equal(last("myride/student/2008416/approaching"), "OFF");
+      assert.equal(last("myride/student/2008416/route_snap_ok"), "OFF");
+      assert.equal(last("myride/student/2008416/stops_away"), "None");
     });
 
     it("resets the wrong-pass guard when stop progress is cleared", () => {
@@ -952,6 +959,46 @@ describe("MqttBridge", () => {
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98)); // off-route
         assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "None");
         assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "None");
+      });
+
+      it("blanks an implausibly large delay (wrong-run schedule signature)", () => {
+        // A fix whose local time is hours past the AM schedule — as happens when the
+        // bus is snapped against the wrong run's timetable — yields |delay| ≫ 120 min
+        // (here 15:01 local − 08:54 scheduled ≈ 367 min). No school run is that late;
+        // the value is blanked rather than published (the field bug's −395 min).
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(
+          makeStudent(routeStop),
+          at(41.51, -72.0, { logTime: "2026-09-11T19:01:00Z" })
+        );
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "None");
+        // The route snap itself is fine — only the schedule-derived delay is nonsense.
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/route_snap_ok")[1], "ON");
+      });
+    });
+
+    describe("route_snap_ok diagnostic", () => {
+      it("publishes discovery for route_snap_ok", () => {
+        publishCalls.length = 0;
+        bridge.publishStudent(makeStudent(routeStop));
+        const topics = publishCalls.map((c) => c[0]);
+        assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_route_snap_ok/config"));
+      });
+
+      it("is ON for an on-route fix", () => {
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0));
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/route_snap_ok")[1], "ON");
+      });
+
+      it("is OFF when the bus is off-route with no baseline to hold", () => {
+        bridge.publishStudent(makeStudent(routeStop));
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98)); // off-route, first fix
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/route_snap_ok")[1], "OFF");
       });
     });
 
