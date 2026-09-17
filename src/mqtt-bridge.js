@@ -919,19 +919,24 @@ class MqttBridge {
     // the bus + stop-pin snap errors. Non-"off-route" reason → the clock advances like
     // a wrong-pass, so a recurring bad snap can't accrue forward slack.
     //
-    // Only applied while `candidate > 0` (bus at/before the stop). Once the bus has
-    // legitimately passed the stop, busCum > cumulativeAtStopMeters clamps candidate to
-    // 0 — the documented at/after-stop state the downstream sensors expect — while its
-    // crow-flies distance keeps growing as it drives away, which would otherwise trip
-    // this invariant on every valid post-stop fix (holding, then blanking route mode
-    // for an on-route bus). A wrong snap *past* the stop already read 0 before this
-    // guard existed and is caught upstream by the wrong-pass guard (a jump from the
-    // last accepted position); this guard's job is the approaching-phase "almost
-    // there" lie, where it can never false-positive.
+    // A clamped-zero candidate (busCum ≥ cumulativeAtStopMeters) means the bus is
+    // at/after the stop — the documented state the downstream sensors expect. That is
+    // legitimate only with an established baseline: when `prev` exists this fix already
+    // passed the wrong-pass guard above, so it reached here by continuous progression
+    // (the dwelling / just-passed case) and is exempt from the invariant, whose
+    // crow-flies distance would otherwise grow as the bus drives away and reject every
+    // valid post-stop fix. Without a baseline a zero candidate is indistinguishable
+    // from a wrong snap onto a distant part of the route (a run change clears the
+    // baseline, so the first fix against the new run's geometry has no `prev`), so it
+    // is NOT exempt — the invariant then rejects it unless the bus is physically near
+    // the stop (a genuine at-stop first fix passes, since 0 < haversine − MARGIN is
+    // false when haversine is small). For candidate > 0 (bus still approaching) the
+    // invariant always applies and can never false-positive.
     const candidate = Math.max(0, myStop.cumulativeAtStopMeters - busCum);
     const straightLine = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
+    const passedWithProgression = candidate === 0 && prev != null;
     if (
-      candidate > 0 &&
+      !passedWithProgression &&
       straightLine != null &&
       candidate < straightLine - ROUTE_PLAUSIBILITY_MARGIN_METERS
     ) {
@@ -951,7 +956,7 @@ class MqttBridge {
         `[Route] ${studentId} route mode acquired ` +
         `run=${ctx.runId != null ? ctx.runId : "?"} bus=${ctx.busNumber || "?"} ` +
         `stops=${ctx.totalStops != null ? ctx.totalStops : "?"} ` +
-        `sched=${ctx.firstStop || "?"}–${ctx.lastStop || "?"}`
+        `window=${ctx.windowStart || "?"}–${ctx.windowEnd || "?"}`
       );
     }
     return candidate;
@@ -980,26 +985,41 @@ class MqttBridge {
    *
    * Logs the snap distance for the first failures of a burst so the true off-route
    * magnitude is visible (distinguishing "tolerance too tight" from "polyline omits
-   * the road").
+   * the road"), plus a throttled heartbeat while the outage persists — including the
+   * case where the route *never* acquires (no baseline), which is the sustained
+   * initial outage this diagnostic exists to investigate.
    *
    * @param {string} studentId — sanitized id
    * @param {object} myStop — normalized stop (cumulativeAtStopMeters already finite)
    * @param {{cum:number, seenMs:number, failCount?:number}|undefined} prev
    * @param {number|null} seenMs — this frame's clock (used only for wrong-pass)
-   * @param {string} reason — "off-route" | "wrong-pass" (drives the clock + the log)
+   * @param {string} reason — "off-route" | "wrong-pass" | "implausible" (drives the
+   *   clock + the log)
    * @param {number} distMeters — snap perpendicular distance (for the diagnostic log)
    * @returns {number|null}
    */
   _holdOrClearRoute(studentId, myStop, prev, seenMs, reason, distMeters) {
-    // No accepted baseline yet (e.g. the run begins off-route): there is nothing to
-    // hold against, and we deliberately persist no failure state here — so we also
-    // stay silent rather than re-log failure #1 on every fix. The diagnostic exists
-    // to measure off-route magnitude *during* a run; it starts once the route has
-    // been acquired at least once.
-    if (!prev) return null;
+    const runId = myStop.runContext ? myStop.runContext.runId : undefined;
+    // No accepted baseline yet (e.g. the run begins off-route and route mode never
+    // acquires). There is nothing to hold against and we deliberately create no
+    // baseline here — seeding the guard from an untrusted position would let a later
+    // wrong snap ride in as "progression". But we must NOT go silent: a run that is
+    // off-route from its first fix (the AM outage this instrument targets) would
+    // otherwise produce zero host logs. Emit a throttled, run-tagged heartbeat.
+    if (!prev) {
+      const now = Date.now();
+      const lastLog = this.lastOffRouteLogMsByStudent.get(studentId) || 0;
+      if (now - lastLog >= OFF_ROUTE_LOG_THROTTLE_MS) {
+        this.lastOffRouteLogMsByStudent.set(studentId, now);
+        console.warn(
+          `[Route] ${studentId} no route acquired (${reason}) ` +
+          `distMeters=${Math.round(distMeters)} run=${runId != null ? runId : "?"}`
+        );
+      }
+      return null;
+    }
 
     const failCount = (prev.failCount || 0) + 1;
-    const runId = myStop.runContext ? myStop.runContext.runId : undefined;
     // Log the first failures of a burst (through the give-up transition) so we
     // capture the off-route distance without flooding on a long legitimate gap. The
     // count is persisted below (prev exists), so this rate-limit actually holds.

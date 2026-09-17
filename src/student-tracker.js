@@ -677,13 +677,16 @@ function normalizeStudent(student, nowMinutes) {
     // the per-fix route diagnostics key on the student id alone, which is identical
     // for both runs.
     if (myStop) {
-      const timed = stops.filter((s) => s.stopTimeMinutes != null);
       myStop.runContext = {
         runId: currentRun.runId,
         busNumber: currentRun.activeVehicle || currentRun.busNumber,
         totalStops,
-        firstStop: timed.length ? formatMinutes(timed[0].stopTimeMinutes) : null,
-        lastStop: timed.length ? formatMinutes(timed[timed.length - 1].stopTimeMinutes) : null,
+        // The run's *selection* window — the stopsInfo-derived [windowStart, windowEnd]
+        // that pickCurrentRun compares "now" against — NOT the full runDetail span. The
+        // diagnostic exists to correlate a route snap with the run whose window expiry
+        // (+grace) selected it, so it must log that same window.
+        windowStart: formatMinutes(currentRun.windowStart),
+        windowEnd: formatMinutes(currentRun.windowEnd),
       };
     }
     // Scheduled arrival at the student's own stop, as a district-local "HH:MM"
