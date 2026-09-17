@@ -198,7 +198,7 @@ Expected output:
 [MyRide]   Tenant: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 [MyRide]   Bus filter: BUS 042
 [MyRide] Connected! State: Connected
-[MQTT] Published HA discovery for student 2008416
+[MQTT] Published HA discovery for student <first name> <last name>
 [Bus] BUS 042 @ 40.6892,-74.0445 speed=26mph
 ```
 
