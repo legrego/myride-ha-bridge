@@ -1105,35 +1105,52 @@ class MqttBridge {
       { retain: false }
     );
 
+    // "Approaching" is physical proximity (crow-flies within the radius) — the right
+    // trigger, and also what tells "at the stop right now" apart from "served it and
+    // drove away": it is the honest signal that flips OFF as the bus leaves.
+    const approaching = haversine != null && haversine <= this.approachRadiusMeters;
+
+    // Stop served for this run: route mode says the bus is at/past the stop
+    // (routeMeters === 0) AND it has left the approach radius. In that state the
+    // route-derived per-fix topics (distance/eta/stops_away) are blanked to "None"
+    // rather than kept republishing a confidently-wrong distance 0 / stops_away 0 for
+    // the remainder of the run — which, refreshed on every fix, would also keep
+    // resetting expire_after so the stale "At your stop" never lapses (the ribbon
+    // frozen 11 min after the bus left, 2026-09-18). A missing number is much cheaper
+    // than a confidently-wrong one; delay/predicted_arrival already blank at
+    // routeMeters === 0, so all four route sensors now clear together once served.
+    // While the bus is still WITHIN the radius (routeMeters === 0 but approaching) the
+    // arrived 0/0 values are kept — that is the genuine "At your stop" moment.
+    const served = routeMeters === 0 && !approaching;
+
     // Schedule-anchored delay + predicted arrival, and route-truthful stops-away —
     // all route mode only (need the bus's cumulative position, derived from routeMeters).
     this._publishDelay(studentId, myStop, routeMeters, nowMs);
-    this._publishStopsAway(studentId, myStop, routeMeters);
+    this._publishStopsAway(studentId, myStop, served ? null : routeMeters);
 
     const effectiveMeters = routeMeters != null ? routeMeters : haversine;
-    if (effectiveMeters == null) {
-      // Bad bus coordinates and no route reading — clear rather than freeze.
+    if (served || effectiveMeters == null) {
+      // Served (terminal) or bad bus coordinates with no route reading — clear rather
+      // than freeze at 0 / a stale last value.
       this.client.publish(distTopic, "None", { retain: false });
       this.client.publish(etaTopic, "None", { retain: false });
-      return;
-    }
-
-    // Per-fix values are non-retained (a retained value would replay stale on an HA
-    // restart) and paired with expire_after in discovery.
-    this.client.publish(distTopic, String(Math.round(effectiveMeters)), { retain: false });
-
-    // ETA estimate: distance / current speed. Only meaningful while moving; when
-    // stopped it is genuinely undefined, so publish "None" (→ unknown) rather than
-    // a frozen last value. The schedule-anchored delay/predicted stay valid instead.
-    if (speedMph > 0) {
-      const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
-      const etaMin = Math.round(effectiveMeters / metersPerMin);
-      this.client.publish(etaTopic, String(etaMin), { retain: false });
     } else {
-      this.client.publish(etaTopic, "None", { retain: false });
+      // Per-fix values are non-retained (a retained value would replay stale on an HA
+      // restart) and paired with expire_after in discovery.
+      this.client.publish(distTopic, String(Math.round(effectiveMeters)), { retain: false });
+
+      // ETA estimate: distance / current speed. Only meaningful while moving; when
+      // stopped it is genuinely undefined, so publish "None" (→ unknown) rather than
+      // a frozen last value. The schedule-anchored delay/predicted stay valid instead.
+      if (speedMph > 0) {
+        const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
+        const etaMin = Math.round(effectiveMeters / metersPerMin);
+        this.client.publish(etaTopic, String(etaMin), { retain: false });
+      } else {
+        this.client.publish(etaTopic, "None", { retain: false });
+      }
     }
 
-    const approaching = haversine != null && haversine <= this.approachRadiusMeters;
     this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
   }
 

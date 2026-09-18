@@ -831,13 +831,15 @@ describe("MqttBridge", () => {
       assert.equal(last("myride/student/2008416/stops_away"), "None");
     });
 
-    it("accepts a post-stop fix once progression is established (dwell/just-passed)", () => {
+    it("accepts a post-stop fix once progression is established, then blanks it as served", () => {
       // Stop pin sits mid-route at the cum-2000 vertex; the route continues to the
       // cum-3000 vertex. With a baseline established (a fix AT the stop), the next fix
-      // one vertex past it is ~1112 m from the pin crow-flies with a route distance
-      // clamped to 0 — the valid "passed" state, reached by continuous progression. It
-      // must NOT be rejected: route_snap_ok stays ON and distance reads 0 (at/after
-      // stop), rather than blanking route mode for an on-route bus.
+      // one vertex past it is ~1112 m from the pin crow-flies (well past the 500 m
+      // approach radius) with a route distance clamped to 0 — the valid "passed" state,
+      // reached by continuous progression. The route snap must NOT be rejected:
+      // route_snap_ok stays ON (on-route tracking is healthy). But because the bus has
+      // left the radius the stop is *served*, so distance_to_stop / stops_away blank to
+      // "None" rather than freeze at 0 for the rest of the run (the frozen-ribbon bug).
       const midRouteStop = { ...routeStop, lat: 41.52, lng: -72.0, cumulativeAtStopMeters: 2000 };
       bridge.publishStudent(makeStudent(midRouteStop));
       // Fix 1 — at the stop (cum 2000): establishes the baseline (accepted via proximity).
@@ -854,7 +856,56 @@ describe("MqttBridge", () => {
 
       const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
       assert.equal(last("myride/student/2008416/route_snap_ok"), "ON");
+      assert.equal(last("myride/student/2008416/distance_to_stop"), "None");
+      assert.equal(last("myride/student/2008416/eta"), "None");
+      assert.equal(last("myride/student/2008416/stops_away"), "None");
+    });
+
+    it("keeps the arrived 0/0 values while the bus is still at the stop (within radius)", () => {
+      // routeStop's pin is at the cum-3000 vertex (41.53,-72.0). A fix right on the pin
+      // clamps route distance to 0 AND is inside the 500 m radius → the genuine
+      // "At your stop" moment, distinct from "served and drove away": the arrived
+      // values are kept (distance 0, stops_away 0) rather than blanked.
+      bridge.publishStudent(makeStudent(routeStop));
+      // Baseline just before the stop so the post-stop fix is accepted by progression.
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.52, -72.0, { logTime: "2026-09-11T13:01:00Z" }));
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(makeStudent(routeStop), at(41.53, -72.0, { logTime: "2026-09-11T13:01:30Z", speed: 0 }));
+
+      const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
+      assert.equal(last("myride/student/2008416/route_snap_ok"), "ON");
+      assert.equal(last("myride/student/2008416/approaching"), "ON");
       assert.equal(Number(last("myride/student/2008416/distance_to_stop")), 0);
+      assert.equal(last("myride/student/2008416/stops_away"), "0");
+    });
+
+    it("does not freeze distance/stops_away at 0 as the bus drives away after serving the stop", () => {
+      // Regression for the 2026-09-18 frozen-ribbon incident: after serving the stop the
+      // bridge kept republishing distance_to_stop=0 / stops_away=0 on every fix for the
+      // rest of the run (each republish also resetting expire_after), so the card read a
+      // fresh "At your stop" 11 min after the bus had gone. Now that the bus has left the
+      // approach radius those topics must publish "None" on EVERY departing fix.
+      const midRouteStop = { ...routeStop, lat: 41.52, lng: -72.0, cumulativeAtStopMeters: 2000 };
+      const student = makeStudent(midRouteStop);
+      bridge.publishStudent(student);
+      // Baseline at the stop, then a run of fixes marching down-route away from it.
+      bridge.publishStudentLocation(student, at(41.52, -72.0, { logTime: "2026-09-11T13:01:00Z" }));
+      const last = (topic) => {
+        const hit = [...publishCalls].reverse().find((c) => c[0] === topic);
+        return hit ? hit[1] : undefined;
+      };
+      // Fixes at cum 3000 (past the pin, >1 km crow-flies) at 13:01:30, 13:02:00, 13:02:30.
+      for (const ms of [30000, 60000, 90000]) {
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(
+          student,
+          at(41.53, -72.0, { logTime: new Date(Date.parse("2026-09-11T13:01:00Z") + ms).toISOString() })
+        );
+        assert.equal(last("myride/student/2008416/distance_to_stop"), "None", `distance served @ +${ms}ms`);
+        assert.equal(last("myride/student/2008416/eta"), "None", `eta served @ +${ms}ms`);
+        assert.equal(last("myride/student/2008416/stops_away"), "None", `stops_away served @ +${ms}ms`);
+        assert.equal(last("myride/student/2008416/approaching"), "OFF", `approaching served @ +${ms}ms`);
+      }
     });
 
     it("rejects a distant zero-distance snap when there is no baseline (wrong snap past the stop)", () => {
