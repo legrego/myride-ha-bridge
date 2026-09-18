@@ -644,6 +644,9 @@ describe("MqttBridge", () => {
       ],
       // Stops before my stop (at cum 3000): the ones at cum 0, 1000, 2000.
       upstreamStopCums: [0, 1000, 2000],
+      // Run identity (normalizeStudent stamps this alongside the geometry). The served
+      // latch keys on runContext.runId + stopId + service date.
+      runContext: { runId: 719, busNumber: "BUS 012", totalStops: 3 },
     };
     const plainStop = {
       stopId: 1638, name: "MAPLE ST @ 3RD AVE", lat: 41.53, lng: -72.0,
@@ -937,13 +940,43 @@ describe("MqttBridge", () => {
         assert.equal(last("myride/student/2008416/eta"), "None", `eta off-route fix #${i}`);
         assert.equal(last("myride/student/2008416/stops_away"), "None", `stops_away off-route fix #${i}`);
       }
-      assert.equal(bridge.stopServedByStudent.get("2008416"), true);
+      assert.ok(bridge.stopServedByStudent.get("2008416"), "served latch set");
 
-      // A run/stop change clears the latch so the next run tracks fresh.
-      const nextRun = makeStudent(routeStop);
-      nextRun.currentRun = { ...nextRun.currentRun, runId: 720, activeVehicle: "BUS 099" };
-      bridge.publishStudent(nextRun);
-      assert.equal(bridge.stopServedByStudent.has("2008416"), false);
+      // The AM→PM flip (same stopId, different runId) is a new occurrence: the latch
+      // does not carry over, so an approaching PM fix publishes a numeric distance again
+      // rather than staying blank.
+      const pmStop = { ...routeStop, runContext: { runId: 720, busNumber: "BUS 012", totalStops: 3 } };
+      const pmRun = makeStudent(pmStop);
+      pmRun.currentRun = { ...pmRun.currentRun, runId: 720 };
+      bridge.publishStudent(pmRun);
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(pmRun, at(41.51, -72.0, { logTime: new Date(t0 + 600000).toISOString() }));
+      assert.notEqual(last("myride/student/2008416/distance_to_stop"), "None", "PM run is a fresh occurrence, not served");
+    });
+
+    it("does not carry the served latch into the next service day (stable run/stop)", () => {
+      // Regression for the overnight-latch case: a student with a single stable daily
+      // run reuses the same runId/stopId every day, so run/stop identity alone never
+      // changes. The latch is scoped to the district-local service date, so a fix on the
+      // next day is a new occurrence and the route sensors track fresh rather than
+      // staying blank from yesterday's service.
+      const last = (topic) => {
+        const hit = [...publishCalls].reverse().find((c) => c[0] === topic);
+        return hit ? hit[1] : undefined;
+      };
+      const student = makeStudent(routeStop);
+      bridge.publishStudent(student);
+      // Day 1: arrive at the endpoint stop, then depart beyond the radius → served.
+      bridge.publishStudentLocation(student, at(41.52, -72.0, { logTime: "2026-09-11T13:01:00Z" }));
+      bridge.publishStudentLocation(student, at(41.53, -72.0, { logTime: "2026-09-11T13:01:30Z" }));
+      bridge.publishStudentLocation(student, at(41.53, -71.98, { logTime: "2026-09-11T13:02:00Z" }));
+      assert.equal(last("myride/student/2008416/distance_to_stop"), "None", "served on day 1");
+
+      // Day 2, same run/stop: a fix must NOT be treated as served — distance publishes
+      // a value again (America/New_York: 2026-09-12 is a different service date).
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(student, at(41.53, -71.98, { logTime: "2026-09-12T13:02:00Z" }));
+      assert.notEqual(last("myride/student/2008416/distance_to_stop"), "None", "day 2 is a fresh occurrence");
     });
 
     it("rejects a distant zero-distance snap when there is no baseline (wrong snap past the stop)", () => {

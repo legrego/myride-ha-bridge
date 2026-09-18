@@ -26,6 +26,7 @@ const {
   scheduledMinutesAt,
   nowMinutesInTimeZone,
   districtLocalTimestamp,
+  districtLocalDate,
   DEFAULT_TIME_ZONE,
 } = require("./student-tracker");
 const { version } = require("./version");
@@ -158,14 +159,26 @@ class MqttBridge {
     // studentId → ms of the last throttled "route mode still off" log, so a sustained
     // off-route outage logs a heartbeat without flooding (see OFF_ROUTE_LOG_THROTTLE_MS).
     this.lastOffRouteLogMsByStudent = new Map();
-    // studentId → bool: whether the current run's stop has been served (the bus reached
-    // it, then left the approach radius). LATCHED for the rest of the run: once served,
-    // the route-derived per-fix sensors stay blank even if route mode is later lost —
-    // otherwise, if the stop sits at the route endpoint, the bus driving off-polyline
-    // exhausts the hold budget and distance/eta would reappear as a growing haversine
-    // number to an already-served stop. Cleared by _clearStopProgress when the run/stop
-    // identity changes (a new run un-serves).
+    // studentId → bool: whether the bus has already served the current stop occurrence
+    // (reached it, then left the approach radius). LATCHED for the rest of the
+    // occurrence so the route-derived per-fix sensors stay blank even if route mode is
+    // later lost — otherwise, if the stop sits at the route endpoint, the bus driving
+    // off-polyline exhausts the hold budget and distance/eta would reappear as a growing
+    // haversine number to an already-served stop. Reset only when the stop *occurrence*
+    // changes (see stopOccurrenceByStudent) — NOT by _clearStopProgress, whose broader
+    // triggers (an activeVehicle-only change, a transient missing stop pin) must not
+    // un-serve an already-served stop mid-run.
     this.stopServedByStudent = new Map();
+    // studentId → last stop *occurrence key* seen in the fix path
+    // (`serviceDate|runId|stopId`, service date district-local from the fix's logTime).
+    // When it changes — a new service day (the same stable run/stop reused overnight is
+    // a fresh occurrence, since pickCurrentRun returns a lone run 24/7 so the poll-side
+    // key never flips), the AM→PM run change (same stopId, different runId), or a
+    // different stop — the per-occurrence state is reset: the served latch AND the
+    // route baseline/route-mode flag, so yesterday's end-of-route position can't hold or
+    // re-serve today's fresh run. Deliberately excludes the active vehicle so a
+    // substitute swap mid-run neither un-serves nor drops the baseline.
+    this.stopOccurrenceByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
     console.log(`[MQTT] Connecting to ${url}:${port} ...`);
@@ -827,8 +840,11 @@ class MqttBridge {
     this.lastRouteCumByStudent.delete(studentId);
     this.routeModeActiveByStudent.delete(studentId);
     this.lastOffRouteLogMsByStudent.delete(studentId);
-    // A new run/stop un-serves: drop the served latch so the next run tracks fresh.
-    this.stopServedByStudent.delete(studentId);
+    // NOTE: the served latch (stopServedByStudent) is deliberately NOT cleared here.
+    // It is reset only when the stop *occurrence* (serviceDate|runId|stopId) changes, in
+    // _publishStopProgress. Clearing it on this helper's broader triggers (an
+    // activeVehicle-only change, a transient missing stop pin) would wrongly un-serve an
+    // already-served stop mid-run.
   }
 
   /**
@@ -1099,6 +1115,29 @@ class MqttBridge {
       return;
     }
 
+    // Stop occurrence: service day + run + stop. When it changes, reset the
+    // per-occurrence state (served latch, route baseline, route-mode flag) so nothing
+    // carries across the boundary — critically the next service day, since a lone run
+    // keeps pickCurrentRun returning it 24/7 (the poll-side key never flips overnight),
+    // and the AM→PM change (same stopId, different runId). The active vehicle is
+    // excluded so a substitute swap mid-run neither un-serves nor drops the baseline.
+    // Service date derives from this fix's logTime (not wall-clock) so replayed/late
+    // fixes stay on their own day; a null date (unparseable logTime) is left unchanged.
+    const serviceDate = districtLocalDate(nowMs, this.timeZone);
+    if (serviceDate != null) {
+      const runId =
+        myStop.runContext && myStop.runContext.runId != null ? myStop.runContext.runId : "?";
+      const stopId = myStop.stopId != null ? myStop.stopId : "?";
+      const occurrenceKey = `${serviceDate}|${runId}|${stopId}`;
+      const prevOccurrence = this.stopOccurrenceByStudent.get(studentId);
+      if (prevOccurrence != null && prevOccurrence !== occurrenceKey) {
+        this.stopServedByStudent.delete(studentId);
+        this.lastRouteCumByStudent.delete(studentId);
+        this.routeModeActiveByStudent.delete(studentId);
+      }
+      this.stopOccurrenceByStudent.set(studentId, occurrenceKey);
+    }
+
     // Straight-line distance drives "approaching" (physical proximity is the
     // right trigger) and is the fallback when route geometry is unavailable.
     const haversine = haversineMeters(busLat, busLng, myStop.lat, myStop.lng);
@@ -1137,8 +1176,9 @@ class MqttBridge {
     // endpoint the departing bus soon snaps off-polyline, and once the hold budget is
     // spent _routeDistanceMeters returns null → the raw condition would flip back to
     // false and distance/eta would reappear as a growing haversine number to an
-    // already-served stop. So once served this run it stays served until the run/stop
-    // identity changes (_clearStopProgress clears the latch).
+    // already-served stop. So once served it stays served for the rest of this stop
+    // occurrence; the occurrence-change reset above drops the latch at the next
+    // day/run/stop.
     if (routeMeters === 0 && !approaching) {
       this.stopServedByStudent.set(studentId, true);
     }
