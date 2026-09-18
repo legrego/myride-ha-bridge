@@ -908,6 +908,44 @@ describe("MqttBridge", () => {
       }
     });
 
+    it("stays served when the bus drives off the route endpoint past the hold budget", () => {
+      // The student's stop is at the route endpoint (routeStop pin = cum-3000 vertex).
+      // After serving it the departing bus snaps off-polyline; _routeDistanceMeters
+      // holds the zero for ROUTE_MAX_HELD_FIXES, then returns null. Without a latch the
+      // served flag would flip back to false on that fix and distance_to_stop / eta
+      // would reappear as a growing haversine value to the already-served stop. The
+      // per-run served latch must keep them blank across the budget-exhaustion boundary.
+      const last = (topic) => {
+        const hit = [...publishCalls].reverse().find((c) => c[0] === topic);
+        return hit ? hit[1] : undefined;
+      };
+      const student = makeStudent(routeStop);
+      bridge.publishStudent(student);
+      const t0 = Date.parse("2026-09-11T13:01:00Z");
+      // Approach the endpoint, then arrive on the pin (within radius → not yet served).
+      bridge.publishStudentLocation(student, at(41.52, -72.0, { logTime: new Date(t0).toISOString() }));
+      bridge.publishStudentLocation(student, at(41.53, -72.0, { logTime: new Date(t0 + 30000).toISOString() }));
+      // Now drive off-polyline east, well beyond the 500 m radius (~1662 m from the
+      // pin): held ×3, then null on the 4th and 5th. Served must stay latched throughout.
+      for (let i = 1; i <= 5; i++) {
+        publishCalls.length = 0;
+        bridge.publishStudentLocation(
+          student,
+          at(41.53, -71.98, { logTime: new Date(t0 + 30000 + i * 30000).toISOString() })
+        );
+        assert.equal(last("myride/student/2008416/distance_to_stop"), "None", `distance off-route fix #${i}`);
+        assert.equal(last("myride/student/2008416/eta"), "None", `eta off-route fix #${i}`);
+        assert.equal(last("myride/student/2008416/stops_away"), "None", `stops_away off-route fix #${i}`);
+      }
+      assert.equal(bridge.stopServedByStudent.get("2008416"), true);
+
+      // A run/stop change clears the latch so the next run tracks fresh.
+      const nextRun = makeStudent(routeStop);
+      nextRun.currentRun = { ...nextRun.currentRun, runId: 720, activeVehicle: "BUS 099" };
+      bridge.publishStudent(nextRun);
+      assert.equal(bridge.stopServedByStudent.has("2008416"), false);
+    });
+
     it("rejects a distant zero-distance snap when there is no baseline (wrong snap past the stop)", () => {
       // First fix against this geometry (no prior baseline — as after a run change
       // clears it) snaps to a vertex past the stop, so the route distance clamps to 0

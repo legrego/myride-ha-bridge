@@ -158,6 +158,14 @@ class MqttBridge {
     // studentId → ms of the last throttled "route mode still off" log, so a sustained
     // off-route outage logs a heartbeat without flooding (see OFF_ROUTE_LOG_THROTTLE_MS).
     this.lastOffRouteLogMsByStudent = new Map();
+    // studentId → bool: whether the current run's stop has been served (the bus reached
+    // it, then left the approach radius). LATCHED for the rest of the run: once served,
+    // the route-derived per-fix sensors stay blank even if route mode is later lost —
+    // otherwise, if the stop sits at the route endpoint, the bus driving off-polyline
+    // exhausts the hold budget and distance/eta would reappear as a growing haversine
+    // number to an already-served stop. Cleared by _clearStopProgress when the run/stop
+    // identity changes (a new run un-serves).
+    this.stopServedByStudent = new Map();
 
     const url = broker.startsWith("mqtt://") ? broker : `mqtt://${broker}`;
     console.log(`[MQTT] Connecting to ${url}:${port} ...`);
@@ -819,6 +827,8 @@ class MqttBridge {
     this.lastRouteCumByStudent.delete(studentId);
     this.routeModeActiveByStudent.delete(studentId);
     this.lastOffRouteLogMsByStudent.delete(studentId);
+    // A new run/stop un-serves: drop the served latch so the next run tracks fresh.
+    this.stopServedByStudent.delete(studentId);
   }
 
   /**
@@ -1121,7 +1131,18 @@ class MqttBridge {
     // routeMeters === 0, so all four route sensors now clear together once served.
     // While the bus is still WITHIN the radius (routeMeters === 0 but approaching) the
     // arrived 0/0 values are kept — that is the genuine "At your stop" moment.
-    const served = routeMeters === 0 && !approaching;
+    //
+    // LATCH the served state: routeMeters === 0 is only observable while a trusted snap
+    // still resolves to the stop's cumulative position. If the stop sits at the route
+    // endpoint the departing bus soon snaps off-polyline, and once the hold budget is
+    // spent _routeDistanceMeters returns null → the raw condition would flip back to
+    // false and distance/eta would reappear as a growing haversine number to an
+    // already-served stop. So once served this run it stays served until the run/stop
+    // identity changes (_clearStopProgress clears the latch).
+    if (routeMeters === 0 && !approaching) {
+      this.stopServedByStudent.set(studentId, true);
+    }
+    const served = this.stopServedByStudent.get(studentId) === true;
 
     // Schedule-anchored delay + predicted arrival, and route-truthful stops-away —
     // all route mode only (need the bus's cumulative position, derived from routeMeters).
