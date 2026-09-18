@@ -147,6 +147,32 @@ function districtLocalTimestamp(nowMs, totalMinutes, timeZone) {
 }
 
 /**
+ * District-local calendar date ("YYYY-MM-DD") of the instant `date`, observed in
+ * `timeZone`. Used to scope per-run state to a single service day so it can't bleed
+ * into the next day when a stable assignment reuses the same run/stop identity.
+ * Falls back to the default zone for an invalid `timeZone`; returns null for a
+ * non-finite/invalid date.
+ *
+ * @param {Date|number} date — instant (Date or ms)
+ * @param {string} [timeZone] — district IANA zone
+ * @returns {string|null} e.g. "2026-09-18"
+ */
+function districtLocalDate(date, timeZone = DEFAULT_TIME_ZONE) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  const zone = isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+    })
+      .formatToParts(d)
+      .map((p) => [p.type, p.value])
+  );
+  if (!parts.year || !parts.month || !parts.day) return null;
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/**
  * Great-circle distance between two lat/lng points, in meters.
  * Returns null if any coordinate is missing/non-finite.
  */
@@ -832,6 +858,7 @@ module.exports = {
   nowMinutesInTimeZone,
   timeZoneOffsetMinutes,
   districtLocalTimestamp,
+  districtLocalDate,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
   RUN_LATE_GRACE_MINUTES,

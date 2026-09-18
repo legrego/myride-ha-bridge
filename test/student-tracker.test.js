@@ -19,6 +19,7 @@ const {
   nowMinutesInTimeZone,
   timeZoneOffsetMinutes,
   districtLocalTimestamp,
+  districtLocalDate,
   isValidTimeZone,
   DEFAULT_TIME_ZONE,
 } = require("../src/student-tracker");
@@ -589,6 +590,32 @@ describe("districtLocalTimestamp()", () => {
   it("returns null on invalid input", () => {
     assert.equal(districtLocalTimestamp(NaN, 548, "America/New_York"), null);
     assert.equal(districtLocalTimestamp(Date.now(), NaN, "America/New_York"), null);
+  });
+});
+
+describe("districtLocalDate()", () => {
+  it("returns the district-local calendar date of an instant", () => {
+    const ms = Date.parse("2026-09-11T13:01:00Z"); // 09:01 EDT
+    assert.equal(districtLocalDate(ms, "America/New_York"), "2026-09-11");
+    assert.equal(districtLocalDate(new Date(ms), "America/New_York"), "2026-09-11");
+  });
+
+  it("rolls to the previous local day for a late-UTC instant still in the prior local day", () => {
+    // 2026-09-12T02:00:00Z is 22:00 EDT on 2026-09-11 — the *local* date is the 11th.
+    const ms = Date.parse("2026-09-12T02:00:00Z");
+    assert.equal(districtLocalDate(ms, "America/New_York"), "2026-09-11");
+    // Same instant is already the 12th in UTC.
+    assert.equal(districtLocalDate(ms, "UTC"), "2026-09-12");
+  });
+
+  it("falls back to the default zone for an invalid timezone", () => {
+    const ms = Date.parse("2026-09-11T13:01:00Z");
+    assert.equal(districtLocalDate(ms, "Not/AZone"), districtLocalDate(ms, DEFAULT_TIME_ZONE));
+  });
+
+  it("returns null for an invalid date", () => {
+    assert.equal(districtLocalDate(NaN, "America/New_York"), null);
+    assert.equal(districtLocalDate(new Date("nope"), "America/New_York"), null);
   });
 });
 
