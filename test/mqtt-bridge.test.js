@@ -979,6 +979,48 @@ describe("MqttBridge", () => {
       assert.notEqual(last("myride/student/2008416/distance_to_stop"), "None", "day 2 is a fresh occurrence");
     });
 
+    it("keeps delay/predicted blank when a post-serve backward-jitter snap goes positive", () => {
+      // Once served, ALL route-derived sensors must stay blank. The route guard tolerates
+      // ROUTE_MONOTONIC_TOLERANCE_METERS (50 m) of backward jitter, so a post-serve fix
+      // snapping to a vertex just before the stop is accepted with a small POSITIVE
+      // routeMeters. delay/predicted_arrival must not reappear off the back of that (they
+      // key on routeMeters > 0); they are forced null by the served latch alongside
+      // distance/eta/stops_away. Needs a vertex within 50 m of the stop — the coarse 1 km
+      // fixture can't express that, so use a fine one whose 4th vertex is ~30 m short.
+      const finePolyline = [
+        [41.50, -72.0], [41.51, -72.0], [41.52, -72.0], [41.5297, -72.0], [41.53, -72.0],
+      ];
+      const fineStop = {
+        ...routeStop,
+        routePolyline: finePolyline,
+        cumulativeMeters: [0, 1000, 2000, 2970, 3000], // vertex idx3 is 30 m before the stop
+        cumulativeAtStopMeters: 3000,
+      };
+      const last = (topic) => {
+        const hit = [...publishCalls].reverse().find((c) => c[0] === topic);
+        return hit ? hit[1] : undefined;
+      };
+      const student = makeStudent(fineStop);
+      bridge.publishStudent(student);
+      const t0 = Date.parse("2026-09-11T13:01:00Z");
+      // Approach → arrive on the endpoint pin → depart off-route beyond the radius (served).
+      bridge.publishStudentLocation(student, at(41.52, -72.0, { logTime: new Date(t0).toISOString() }));
+      bridge.publishStudentLocation(student, at(41.53, -72.0, { logTime: new Date(t0 + 30000).toISOString() }));
+      bridge.publishStudentLocation(student, at(41.53, -71.98, { logTime: new Date(t0 + 60000).toISOString() }));
+      assert.equal(bridge.stopServedByStudent.get("2008416"), true, "served latched");
+
+      // Backward-jitter fix: snaps to the cum-2970 vertex (30 m back, within the 50 m
+      // tolerance) → accepted with routeMeters ≈ 30 (> 0) and back inside the radius.
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(student, at(41.5297, -72.0, { logTime: new Date(t0 + 90000).toISOString() }));
+      // All five route-derived sensors stay blank because the occurrence is still served.
+      assert.equal(last("myride/student/2008416/delay"), "None", "delay stays blank when served");
+      assert.equal(last("myride/student/2008416/predicted_arrival"), "None", "predicted stays blank when served");
+      assert.equal(last("myride/student/2008416/distance_to_stop"), "None");
+      assert.equal(last("myride/student/2008416/eta"), "None");
+      assert.equal(last("myride/student/2008416/stops_away"), "None");
+    });
+
     it("rejects a distant zero-distance snap when there is no baseline (wrong snap past the stop)", () => {
       // First fix against this geometry (no prior baseline — as after a run change
       // clears it) snaps to a vertex past the stop, so the route distance clamps to 0

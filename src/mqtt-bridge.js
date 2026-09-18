@@ -1186,8 +1186,13 @@ class MqttBridge {
 
     // Schedule-anchored delay + predicted arrival, and route-truthful stops-away —
     // all route mode only (need the bus's cumulative position, derived from routeMeters).
-    this._publishDelay(studentId, myStop, routeMeters, nowMs);
-    this._publishStopsAway(studentId, myStop, served ? null : routeMeters);
+    // Force null once served so ALL route-derived sensors blank together: otherwise a
+    // post-serve fix that snaps backward within the wrong-pass tolerance
+    // (ROUTE_MONOTONIC_TOLERANCE_METERS) makes routeMeters positive again and _publishDelay
+    // would republish delay/predicted_arrival while distance/eta/stops_away stay blank.
+    const routeMetersForProgress = served ? null : routeMeters;
+    this._publishDelay(studentId, myStop, routeMetersForProgress, nowMs);
+    this._publishStopsAway(studentId, myStop, routeMetersForProgress);
 
     const effectiveMeters = routeMeters != null ? routeMeters : haversine;
     if (served || effectiveMeters == null) {
