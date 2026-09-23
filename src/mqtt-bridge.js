@@ -1047,11 +1047,17 @@ class MqttBridge {
       return this._holdOrClearRoute(studentId, myStop, stored, seenMs, nowMs, "off-route", snap.nearestDistMeters);
     }
 
-    // Heading filter: drop passes driven in a different direction than the bus. If
-    // none agree (heading noise on a tight curve, or the wrong route altogether), keep
-    // them all and let the wrong-pass/plausibility guards below decide.
-    const agreeing = snap.candidates.filter((c) => c.headingOk !== false);
-    const passes = agreeing.length > 0 ? agreeing : snap.candidates;
+    // Heading filter: when the moving bus disagrees with every nearby pass,
+    // treat the snap as untrusted rather than silently restoring those passes.
+    const passes = headingUsable
+      ? snap.candidates.filter((c) => c.headingOk === true)
+      : snap.candidates;
+    if (passes.length === 0) {
+      const nearest = Math.min(...snap.candidates.map((c) => c.distMeters));
+      return this._holdOrClearRoute(
+        studentId, myStop, prev, seenMs, nowMs, "implausible", nearest
+      );
+    }
 
     // Wrong-pass guard: reject anything that moves backward (never legitimate within a
     // run) or further forward than the elapsed source time plausibly allows. A genuine
