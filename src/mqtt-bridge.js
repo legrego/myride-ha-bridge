@@ -22,7 +22,7 @@
 const mqtt = require("mqtt");
 const {
   haversineMeters,
-  nearestVertexCumulative,
+  routePassCandidates,
   scheduledMinutesAt,
   nowMinutesInTimeZone,
   districtLocalTimestamp,
@@ -107,6 +107,22 @@ const ROUTE_MAX_PLAUSIBLE_MPS = 30; // ~67 mph, generous for a school bus
 // quickly (and expire_after: 600 backstops a total feed death regardless). Missing
 // geometry is NOT a transient failure and is never held.
 const ROUTE_MAX_HELD_FIXES = 3;
+// The hold is also bounded by *age*: never re-publish a held route position once the
+// last accepted fix is more than this old (by source logTime). The count bound alone
+// assumed fixes arrive at the normal cadence; across an upstream feed gap (2026-09-23:
+// no fixes 09:07→09:22) the first two fixes after the gap were ~15 min past the last
+// accepted one yet still "held", re-publishing the pre-gap stops_away/distance as
+// current and resetting expire_after on them. At normal cadence 3 holds span ≤ ~90 s,
+// so this only bites on a gap; the extra slack absorbs cadence jitter.
+const ROUTE_MAX_HOLD_AGE_MS = 120_000;
+// Pass disambiguation: where the route revisits a street, a fix sits near two (or
+// more) passes. Candidate passes whose travel bearing is more than this far from the
+// bus heading are discarded. Only applied when the bus is moving faster than
+// ROUTE_HEADING_MIN_SPEED_MPH — a stopped/crawling bus reports a stale or noisy
+// heading. 60° is loose enough for GPS heading noise on curves, tight enough to tell
+// the outbound pass from the return pass (~180°) or a crossing street (~90°).
+const ROUTE_HEADING_TOLERANCE_DEG = 60;
+const ROUTE_HEADING_MIN_SPEED_MPH = 5;
 
 class MqttBridge {
   /**
@@ -137,11 +153,13 @@ class MqttBridge {
     // stopId alone is insufficient: the home stop shares one stopId across the AM
     // and PM runs, so only the run/active-vehicle change marks the transition.
     this.lastStopKeyByStudent = new Map();
-    // studentId → { cum, seenMs, failCount }: last accepted cumulative route
-    // distance of the bus (meters from the run start); the guard's *reference*
-    // timestamp against which the next frame's forward allowance is measured; and
+    // studentId → { cum, seenMs, acceptedMs, failCount, wrongPassStreak }: last
+    // accepted cumulative route distance of the bus (meters from the run start); the
+    // guard's *reference* timestamp against which the next frame's forward allowance
+    // is measured; the source time of the last accepted fix (bounds the hold's age);
     // how many consecutive transient snap failures have occurred since the last
-    // accepted fix. seenMs is NOT simply "the last frame seen": it is advanced on an
+    // accepted fix; and how many of those were wrong-pass rejections (drives the
+    // reseed of a suspect baseline). seenMs is NOT simply "the last frame seen": it is advanced on an
     // accepted fix and on a wrong-pass rejection (so a recurring wrong-pass snap
     // can't accrue slack), but *preserved* across off-route holds (so re-acquisition
     // after a connector gap measures from the last accepted fix — see
@@ -152,6 +170,8 @@ class MqttBridge {
     // failures (off-route connector stretches / wrong-pass) before giving up. Reset
     // whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
+    // studentId → last published feed_live state (publish on change only).
+    this.feedLiveByStudent = new Map();
     // studentId → bool: whether the last fix was tracked in route mode (a trusted
     // snap, held or accepted). Drives the route_snap_ok diagnostic sensor and the
     // one-line "route mode acquired" log on each (re)acquisition.
@@ -384,6 +404,8 @@ class MqttBridge {
     const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
     const predictedArrivalTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
     const routeSnapOkTopic = `${this.topicPrefix}/student/${studentId}/route_snap_ok`;
+    const lastFixTopic = `${this.topicPrefix}/student/${studentId}/last_fix`;
+    const feedLiveTopic = `${this.topicPrefix}/student/${studentId}/feed_live`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -689,6 +711,51 @@ class MqttBridge {
         { retain: true }
       );
 
+      // Last Fix — diagnostic. GPS time of the most recent location fix for the
+      // student's bus. The device_tracker has no expiry, so on its own a dead feed
+      // looks like a live bus frozen in place; this makes the fix age first-class in
+      // HA (e.g. `now() - states('sensor…last_fix')`). Retained: it's a fact about
+      // the past, worth replaying.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_last_fix/config`,
+        JSON.stringify({
+          name: "Last Fix",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_last_fix`,
+          state_topic: lastFixTopic,
+          device_class: "timestamp",
+          entity_category: "diagnostic",
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:crosshairs-gps",
+        }),
+        { retain: true }
+      );
+
+      // Feed Live — diagnostic. ON when a fix for the student's bus arrived within
+      // the silence threshold (FEED_SILENCE_MS); the orchestrator's feed watchdog
+      // flips it OFF when fixes stop (see publishFeedLive). A dead bridge is covered
+      // by the availability topic (LWT), so this needs no expire_after.
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_feed_live/config`,
+        JSON.stringify({
+          name: "Feed Live",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_feed_live`,
+          state_topic: feedLiveTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          device_class: "connectivity",
+          entity_category: "diagnostic",
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:access-point-network",
+        }),
+        { retain: true }
+      );
+
       console.log(`[MQTT] Published HA discovery for student ${displayName}`);
     }
 
@@ -813,7 +880,45 @@ class MqttBridge {
     // stop. GPS-derived from the live bus position and the authoritative stop
     // pin, so it updates on every location event (not just each 15-min poll).
     // logTime feeds the route guard's time-based forward allowance.
-    this._publishStopProgress(studentId, currentRun.myStop, latitude, longitude, speed, Date.parse(logTime));
+    this._publishStopProgress(
+      studentId, currentRun.myStop, latitude, longitude, speed, Date.parse(logTime), heading
+    );
+
+    // Feed health: GPS time of this fix, and the feed is live.
+    const fixMs = Date.parse(logTime);
+    if (Number.isFinite(fixMs)) {
+      this.client.publish(
+        `${this.topicPrefix}/student/${studentId}/last_fix`,
+        new Date(fixMs).toISOString(),
+        { retain: true }
+      );
+    }
+    this._publishFeedLive(studentId, true);
+  }
+
+  /**
+   * Publish the student's `feed_live` state (called by the orchestrator's feed
+   * watchdog with `false` when the student's bus has gone silent). No-op before
+   * discovery, and only publishes on change.
+   *
+   * @param {object} student — normalized student
+   * @param {boolean} live
+   */
+  publishFeedLive(student, live) {
+    if (!student || !student.uniqueId) return;
+    const studentId = this._sanitizeId(student.uniqueId);
+    if (!this.discoveredStudents.has(studentId)) return;
+    this._publishFeedLive(studentId, live);
+  }
+
+  _publishFeedLive(studentId, live) {
+    if (this.feedLiveByStudent.get(studentId) === live) return;
+    this.feedLiveByStudent.set(studentId, live);
+    this.client.publish(
+      `${this.topicPrefix}/student/${studentId}/feed_live`,
+      live ? "ON" : "OFF",
+      { retain: true }
+    );
   }
 
   /**
@@ -876,7 +981,24 @@ class MqttBridge {
    * then does the caller fall back to haversine and the route-only sensors blank.
    * This keeps stops_away/delay/predicted_arrival (and a route-consistent distance)
    * steady across the brief gaps where the polyline doesn't cover the road, instead
-   * of flipping to "unknown" on a single bad fix.
+   * of flipping to "unknown" on a single bad fix. The hold is also age-bounded
+   * (ROUTE_MAX_HOLD_AGE_MS) so it can't re-publish pre-gap values after a feed gap.
+   *
+   * Pass selection: the route can revisit a street (loops/U-turns), so the bus is
+   * snapped to every nearby *pass* (routePassCandidates), not a single global nearest
+   * vertex. Passes whose travel bearing disagrees with the bus heading are discarded
+   * (when the bus is moving fast enough for the heading to mean anything). With a
+   * live baseline, the earliest pass inside the wrong-pass window is taken; with no
+   * baseline (first acquisition, or a reseed — below), the earliest pass overall.
+   * "Earliest" is the conservative choice: the bus can't have skipped ahead, and an
+   * acquisition one loop too far along (2026-09-23: stops_away 9 vs a true ~11) then
+   * rejects every correct fix as a backward wrong-pass until the bus catches up.
+   *
+   * Reseed: once a streak of wrong-pass rejections has exhausted the hold budget
+   * (route mode off), the baseline itself is the suspect — every fix is on the route
+   * but inconsistent with it — so the next fix re-acquires fresh instead of being
+   * compared against it. Off-route failures don't count toward this: there the
+   * baseline is fine and is kept for re-acquisition after the connector gap.
    *
    * @param {string} studentId — sanitized id (keys the wrong-pass/hold state)
    * @param {object} myStop — normalized stop; needs routePolyline, cumulativeMeters,
@@ -884,10 +1006,14 @@ class MqttBridge {
    * @param {number} busLat
    * @param {number} busLng
    * @param {number} [nowMs] — source timestamp (ms) of this fix, for the forward
-   *   allowance; when unknown the allowance falls back to BASE only.
+   *   allowance and hold age; when unknown the allowance falls back to BASE only and
+   *   the hold is count-bounded only.
+   * @param {number} [headingDeg] — bus heading (degrees), for pass disambiguation
+   * @param {number} [speedMph] — bus speed; heading is ignored at/below
+   *   ROUTE_HEADING_MIN_SPEED_MPH (or when either is unknown)
    * @returns {number|null}
    */
-  _routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs) {
+  _routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs, headingDeg, speedMph) {
     if (
       !myStop ||
       !Array.isArray(myStop.routePolyline) ||
@@ -897,44 +1023,68 @@ class MqttBridge {
       return null; // structural: no geometry to hold against
     }
 
-    const snap = nearestVertexCumulative(
-      busLat, busLng, myStop.routePolyline, myStop.cumulativeMeters
+    const headingUsable =
+      Number.isFinite(headingDeg) && Number.isFinite(speedMph) && speedMph > ROUTE_HEADING_MIN_SPEED_MPH;
+    const snap = routePassCandidates(
+      busLat, busLng, myStop.routePolyline, myStop.cumulativeMeters, ROUTE_SNAP_MAX_METERS,
+      { headingDeg: headingUsable ? headingDeg : null, headingToleranceDeg: ROUTE_HEADING_TOLERANCE_DEG }
     );
     if (!snap) return null; // no vertices — structural, treat like missing geometry
 
-    const prev = this.lastRouteCumByStudent.get(studentId);
+    const stored = this.lastRouteCumByStudent.get(studentId);
+    // Reseed: a wrong-pass streak that already exhausted the hold budget means the
+    // baseline, not the fix, is wrong — acquire fresh from this fix (see doc above).
+    const reseed = stored != null && (stored.wrongPassStreak || 0) > ROUTE_MAX_HELD_FIXES;
+    const prev = reseed ? undefined : stored;
     // This frame's clock. It becomes the guard's reference timestamp on an accepted
     // fix or a wrong-pass rejection; off-route holds preserve the previous reference
     // instead (see _holdOrClearRoute). Falls back to the previous reference when the
     // source timestamp is unknown.
     const seenMs = Number.isFinite(nowMs) ? nowMs : (prev ? prev.seenMs : null);
 
-    // Off-route / GPS noise: the bus is nowhere near the route → don't trust the snap.
-    if (snap.distMeters > ROUTE_SNAP_MAX_METERS) {
-      return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "off-route", snap.distMeters);
+    // Off-route / GPS noise: the bus is nowhere near any pass → don't trust the snap.
+    if (snap.candidates.length === 0) {
+      return this._holdOrClearRoute(studentId, myStop, stored, seenMs, nowMs, "off-route", snap.nearestDistMeters);
     }
 
-    const busCum = snap.cumulativeMeters;
+    // Heading filter: when the moving bus disagrees with every nearby pass,
+    // treat the snap as untrusted rather than silently restoring those passes.
+    const passes = headingUsable
+      ? snap.candidates.filter((c) => c.headingOk === true)
+      : snap.candidates;
+    if (passes.length === 0) {
+      const nearest = Math.min(...snap.candidates.map((c) => c.distMeters));
+      return this._holdOrClearRoute(
+        studentId, myStop, prev, seenMs, nowMs, "implausible", nearest
+      );
+    }
 
-    // Wrong-pass guard: the route can revisit streets (loops/U-turns), so a global
-    // nearest-vertex snap can land on the wrong pass. Reject anything that moves
-    // backward (never legitimate within a run) or further forward than the elapsed
-    // source time plausibly allows. A genuine long gap justifies a large forward
-    // jump (→ re-acquire); a deterministic wrong-pass snap at normal cadence never
-    // does (→ held, then haversine, frame after frame).
+    // Wrong-pass guard: reject anything that moves backward (never legitimate within a
+    // run) or further forward than the elapsed source time plausibly allows. A genuine
+    // long gap justifies a large forward jump (→ re-acquire); a wrong-pass snap at
+    // normal cadence never does (→ held, then haversine, frame after frame). Applied
+    // per pass: the earliest pass inside the window wins, so a fix near two passes
+    // resolves to the one consistent with the bus's progress instead of being rejected.
+    let chosen;
     if (prev) {
       const elapsedSec =
         prev.seenMs != null && Number.isFinite(nowMs)
           ? Math.max(0, (nowMs - prev.seenMs) / 1000)
           : 0;
       const allowedForward = ROUTE_FORWARD_BASE_METERS + elapsedSec * ROUTE_MAX_PLAUSIBLE_MPS;
-      const rejected =
-        busCum < prev.cum - ROUTE_MONOTONIC_TOLERANCE_METERS ||
-        busCum > prev.cum + allowedForward;
-      if (rejected) {
-        return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "wrong-pass", snap.distMeters);
+      chosen = passes.find(
+        (c) =>
+          c.cumulativeMeters >= prev.cum - ROUTE_MONOTONIC_TOLERANCE_METERS &&
+          c.cumulativeMeters <= prev.cum + allowedForward
+      );
+      if (!chosen) {
+        const nearest = Math.min(...passes.map((c) => c.distMeters));
+        return this._holdOrClearRoute(studentId, myStop, prev, seenMs, nowMs, "wrong-pass", nearest);
       }
+    } else {
+      chosen = passes[0]; // candidates are in travel order → earliest pass
     }
+    const busCum = chosen.cumulativeMeters;
 
     // Plausibility invariant: while the bus is still approaching the stop, the implied
     // road distance to it can't be shorter than the crow-flies distance (a straight
@@ -973,11 +1123,19 @@ class MqttBridge {
       straightLine != null &&
       candidate < straightLine - ROUTE_PLAUSIBILITY_MARGIN_METERS
     ) {
-      return this._holdOrClearRoute(studentId, myStop, prev, seenMs, "implausible", snap.distMeters);
+      return this._holdOrClearRoute(studentId, myStop, prev, seenMs, nowMs, "implausible", chosen.distMeters);
     }
 
-    // Accepted fix: reset the failure counter and record the new position.
-    this.lastRouteCumByStudent.set(studentId, { cum: busCum, seenMs, failCount: 0 });
+    // Accepted fix: reset the failure counters and record the new position.
+    // acceptedMs (source time of this accepted fix) bounds the hold's age; unlike
+    // seenMs it is never advanced by a rejection.
+    this.lastRouteCumByStudent.set(studentId, {
+      cum: busCum,
+      seenMs,
+      acceptedMs: Number.isFinite(nowMs) ? nowMs : null,
+      failCount: 0,
+      wrongPassStreak: 0,
+    });
     // Log once on each (re)acquisition of route mode, carrying the loaded run's
     // identity + schedule window — this is what makes an AM-vs-PM route mismatch
     // visible (the per-fix diagnostics key on the student id, identical for both runs).
@@ -989,7 +1147,9 @@ class MqttBridge {
         `[Route] ${studentId} route mode acquired ` +
         `run=${ctx.runId != null ? ctx.runId : "?"} bus=${ctx.busNumber || "?"} ` +
         `stops=${ctx.totalStops != null ? ctx.totalStops : "?"} ` +
-        `window=${ctx.windowStart || "?"}–${ctx.windowEnd || "?"}`
+        `window=${ctx.windowStart || "?"}–${ctx.windowEnd || "?"} ` +
+        `cum=${Math.round(busCum)} passes=${snap.candidates.length}` +
+        `${headingUsable ? ` heading=${Math.round(headingDeg)}` : ""}${reseed ? " (reseeded)" : ""}`
       );
     }
     return candidate;
@@ -1000,7 +1160,11 @@ class MqttBridge {
    * accepted position for a few frames, then give up.
    *
    * Returns the held road distance (from `prev.cum`) while the consecutive-failure
-   * count is within ROUTE_MAX_HELD_FIXES, otherwise null (→ haversine + None).
+   * count is within ROUTE_MAX_HELD_FIXES *and* the last accepted fix is no older than
+   * ROUTE_MAX_HOLD_AGE_MS (by source time), otherwise null (→ haversine + None). The
+   * age bound is what stops a hold from outliving an upstream feed gap: the first
+   * fixes after a long silence are only a failure or two into the count, but the
+   * position they would re-publish is from before the gap.
    *
    * Timestamp handling differs by failure kind, and this matters for re-acquisition:
    *  - **wrong-pass** advances the frame clock (`seenMs`), so the *next* frame's
@@ -1014,7 +1178,9 @@ class MqttBridge {
    *    the last *accepted* fix, not since the last off-route frame (otherwise a bus
    *    that moved a kilometer off-route can never rejoin the route and route mode is
    *    lost for the rest of the run).
-   * The failure counter is always advanced.
+   * The failure counter is always advanced. `wrongPassStreak` (wrong-pass rejections
+   * since the last accepted fix; other failure kinds neither advance nor reset it)
+   * drives the reseed in _routeDistanceMeters.
    *
    * Logs the snap distance for the first failures of a burst so the true off-route
    * magnitude is visible (distinguishing "tolerance too tight" from "polyline omits
@@ -1024,14 +1190,16 @@ class MqttBridge {
    *
    * @param {string} studentId — sanitized id
    * @param {object} myStop — normalized stop (cumulativeAtStopMeters already finite)
-   * @param {{cum:number, seenMs:number, failCount?:number}|undefined} prev
+   * @param {{cum:number, seenMs:number, acceptedMs?:number|null, failCount?:number,
+   *   wrongPassStreak?:number}|undefined} prev
    * @param {number|null} seenMs — this frame's clock (used only for wrong-pass)
+   * @param {number} [nowMs] — this fix's source time (for the hold-age bound)
    * @param {string} reason — "off-route" | "wrong-pass" | "implausible" (drives the
    *   clock + the log)
    * @param {number} distMeters — snap perpendicular distance (for the diagnostic log)
    * @returns {number|null}
    */
-  _holdOrClearRoute(studentId, myStop, prev, seenMs, reason, distMeters) {
+  _holdOrClearRoute(studentId, myStop, prev, seenMs, nowMs, reason, distMeters) {
     const runId = myStop.runContext ? myStop.runContext.runId : undefined;
     // No accepted baseline yet (e.g. the run begins off-route and route mode never
     // acquires). There is nothing to hold against and we deliberately create no
@@ -1053,6 +1221,11 @@ class MqttBridge {
     }
 
     const failCount = (prev.failCount || 0) + 1;
+    const wrongPassStreak = (prev.wrongPassStreak || 0) + (reason === "wrong-pass" ? 1 : 0);
+    const heldAgeMs =
+      prev.acceptedMs != null && Number.isFinite(nowMs) ? nowMs - prev.acceptedMs : null;
+    const holdExpired = heldAgeMs != null && heldAgeMs > ROUTE_MAX_HOLD_AGE_MS;
+    const holding = failCount <= ROUTE_MAX_HELD_FIXES && !holdExpired;
     // Log the first failures of a burst (through the give-up transition) so we
     // capture the off-route distance without flooding on a long legitimate gap. The
     // count is persisted below (prev exists), so this rate-limit actually holds.
@@ -1060,7 +1233,12 @@ class MqttBridge {
       console.warn(
         `[Route] ${studentId} snap failure (${reason}) distMeters=${Math.round(distMeters)} ` +
         `run=${runId != null ? runId : "?"} ` +
-        `consecutive=${failCount}${failCount <= ROUTE_MAX_HELD_FIXES ? " (holding)" : " (route mode off)"}`
+        `consecutive=${failCount}` +
+        (holding
+          ? " (holding)"
+          : holdExpired
+            ? ` (route mode off: last accepted fix ${Math.round(heldAgeMs / 1000)}s ago)`
+            : " (route mode off)")
       );
     } else {
       // Route mode is already off and the burst warn has fired. Keep a throttled
@@ -1078,16 +1256,23 @@ class MqttBridge {
         );
       }
     }
-    // Once the hold budget is exhausted, route mode is off (drives route_snap_ok OFF
-    // and re-arms the "route mode acquired" log for the eventual re-acquisition).
-    if (failCount > ROUTE_MAX_HELD_FIXES) {
+    // Once the hold budget (count or age) is exhausted, route mode is off (drives
+    // route_snap_ok OFF and re-arms the "route mode acquired" log for the eventual
+    // re-acquisition).
+    if (!holding) {
       this.routeModeActiveByStudent.set(studentId, false);
     }
     // Preserve the accepted timestamp across off-route holds (see doc above);
     // advance it for wrong-pass / implausible so recurring bad snaps can't accrue slack.
     const nextSeenMs = reason === "off-route" ? prev.seenMs : seenMs;
-    this.lastRouteCumByStudent.set(studentId, { cum: prev.cum, seenMs: nextSeenMs, failCount });
-    if (failCount <= ROUTE_MAX_HELD_FIXES) {
+    this.lastRouteCumByStudent.set(studentId, {
+      cum: prev.cum,
+      seenMs: nextSeenMs,
+      acceptedMs: prev.acceptedMs != null ? prev.acceptedMs : null,
+      failCount,
+      wrongPassStreak,
+    });
+    if (holding) {
       return Math.max(0, myStop.cumulativeAtStopMeters - prev.cum);
     }
     return null;
@@ -1103,8 +1288,9 @@ class MqttBridge {
    * @param {number} busLng
    * @param {number} speedMph — current bus speed
    * @param {number} [nowMs] — source timestamp (ms) of this fix (for the route guard)
+   * @param {number} [headingDeg] — bus heading (for route pass disambiguation)
    */
-  _publishStopProgress(studentId, myStop, busLat, busLng, speedMph, nowMs) {
+  _publishStopProgress(studentId, myStop, busLat, busLng, speedMph, nowMs, headingDeg) {
     const distTopic = `${this.topicPrefix}/student/${studentId}/distance_to_stop`;
     const etaTopic = `${this.topicPrefix}/student/${studentId}/eta`;
     const approachingTopic = `${this.topicPrefix}/student/${studentId}/approaching`;
@@ -1144,7 +1330,9 @@ class MqttBridge {
 
     // Road-following distance when we have route geometry and a trustworthy snap;
     // otherwise fall back to crow-flies. Drives distance_to_stop and the ETA.
-    const routeMeters = this._routeDistanceMeters(studentId, myStop, busLat, busLng, nowMs);
+    const routeMeters = this._routeDistanceMeters(
+      studentId, myStop, busLat, busLng, nowMs, headingDeg, speedMph
+    );
 
     // Diagnostic: is the bus being tracked on-route right now? routeMeters != null
     // means a trusted or held snap (route mode); null means we fell back to crow-flies.

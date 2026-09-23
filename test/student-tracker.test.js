@@ -13,6 +13,9 @@ const {
   scheduledMinutesAt,
   cumulativeMetersAlong,
   nearestVertexCumulative,
+  routePassCandidates,
+  bearingDegrees,
+  bearingDiffDegrees,
   pickMyStop,
   summarizeRunStops,
   stopIdToSeqMap,
@@ -652,6 +655,67 @@ describe("nearestVertexCumulative()", () => {
   it("returns null for an empty polyline or non-finite point", () => {
     assert.equal(nearestVertexCumulative(41.5, -72.0, [], []), null);
     assert.equal(nearestVertexCumulative(NaN, -72.0, poly, cum), null);
+  });
+});
+
+describe("bearingDegrees() / bearingDiffDegrees()", () => {
+  it("computes compass bearings", () => {
+    assert.ok(Math.abs(bearingDegrees(41.5, -72.0, 41.6, -72.0) - 0) < 0.01);
+    assert.ok(Math.abs(bearingDegrees(41.5, -72.0, 41.5, -71.9) - 90) < 0.1);
+    assert.ok(Math.abs(bearingDegrees(41.6, -72.0, 41.5, -72.0) - 180) < 0.01);
+    assert.equal(bearingDegrees(NaN, -72.0, 41.5, -72.0), null);
+  });
+
+  it("measures the short way around the compass", () => {
+    assert.equal(bearingDiffDegrees(350, 10), 20);
+    assert.equal(bearingDiffDegrees(10, 350), 20);
+    assert.equal(bearingDiffDegrees(0, 180), 180);
+  });
+});
+
+describe("routePassCandidates()", () => {
+  // Northbound to V2, loop east, then back westbound through V1's spot (V5). Hand-set
+  // cumulative; fabricated coordinates.
+  const poly = [
+    [41.50, -72.0], [41.51, -72.0], [41.52, -72.0], [41.52, -71.99],
+    [41.51, -71.99], [41.51, -72.00001], [41.51, -72.01],
+  ];
+  const cum = [0, 1000, 2000, 3000, 4000, 5000, 6000];
+
+  it("returns one candidate per pass, in travel order", () => {
+    const r = routePassCandidates(41.51, -72.0, poly, cum, 150);
+    assert.deepEqual(r.candidates.map((c) => c.cumulativeMeters), [1000, 5000]);
+    assert.ok(r.candidates.every((c) => c.headingOk === null));
+    assert.ok(r.nearestDistMeters < 1);
+  });
+
+  it("flags which passes agree with the heading", () => {
+    const r = routePassCandidates(41.51, -72.0, poly, cum, 150, { headingDeg: 5 });
+    assert.deepEqual(r.candidates.map((c) => c.headingOk), [true, false]);
+    const w = routePassCandidates(41.51, -72.0, poly, cum, 150, { headingDeg: 265 });
+    assert.deepEqual(w.candidates.map((c) => c.headingOk), [false, true]);
+  });
+
+  it("resolves a contiguous U-turn pass to the leg matching the heading", () => {
+    // Out north and straight back south over the same vertices (U-turn at V2).
+    const uturn = [[41.50, -72.0], [41.5005, -72.0], [41.501, -72.0], [41.5005, -72.00001], [41.50, -72.00001]];
+    const ucum = [0, 55, 110, 165, 220];
+    const north = routePassCandidates(41.5005, -72.0, uturn, ucum, 150, { headingDeg: 0 });
+    assert.equal(north.candidates.length, 1); // one contiguous pass
+    assert.equal(north.candidates[0].cumulativeMeters, 55);
+    const south = routePassCandidates(41.5005, -72.0, uturn, ucum, 150, { headingDeg: 180 });
+    assert.equal(south.candidates[0].cumulativeMeters, 165);
+  });
+
+  it("returns no candidates (but the nearest distance) when off-route", () => {
+    const r = routePassCandidates(41.50, -71.98, poly, cum, 150);
+    assert.deepEqual(r.candidates, []);
+    assert.ok(r.nearestDistMeters > 150);
+  });
+
+  it("returns null for an empty polyline or non-finite point", () => {
+    assert.equal(routePassCandidates(41.5, -72.0, [], [], 150), null);
+    assert.equal(routePassCandidates(NaN, -72.0, poly, cum, 150), null);
   });
 });
 
