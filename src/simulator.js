@@ -63,13 +63,13 @@ function wktPath(route, from, to) {
 }
 
 // Fake student: normally rides BUS 042 (AM), today BUS 099 is substituting.
-// PM run uses BUS 042 as usual. Mirrors the real Lucas/bus-57 scenario.
+// PM run uses BUS 042 as usual. Mirrors a real-world substitute-bus scenario.
 // stopsInfo/runDetail mirror the real /api/student shape so the stop-tracking
 // entities (my_stop, distance_to_stop, eta, approaching) have data to work with.
 const FAKE_STUDENTS = [
   {
     uniqueId: "sim_001",
-    firstName: "Lucas",
+    firstName: "Alex",
     lastName: "Sim",
     locationName: SCHOOL_STOP.locationName,
     homeAddress: { latitude: 40.7132, longitude: -74.0072 },

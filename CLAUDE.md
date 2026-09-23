@@ -77,7 +77,7 @@ is set so HA automations can be tested against fake data.
 2. `MyRideSignalRClient` uses an `accessTokenFactory` closure to lazily retrieve the current token
 3. `StudentTracker` polls `/api/student`; on each poll `index.js` publishes per-student discovery/state via `MqttBridge.publishStudent()` and rebuilds the `busToStudents` map from each student's `currentRun.activeVehicle`
 4. On each `NewLocation` SignalR event, `index.js` looks up `busToStudents` for that bus and calls `MqttBridge.publishStudentLocation(student, data)` for each matching student
-5. `MqttBridge` sanitizes the student ID (`"2008416"` → `"2008416"`), publishes discovery on first sight, then publishes the student's GPS/speed/heading/moving state
+5. `MqttBridge` sanitizes the student ID (`"1234567"` → `"1234567"`), publishes discovery on first sight, then publishes the student's GPS/speed/heading/moving state
 
 ## NewLocation Event Shape
 
