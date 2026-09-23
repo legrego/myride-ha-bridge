@@ -20,7 +20,7 @@ describe("MyRideApi", () => {
 
   describe("getStudents()", () => {
     it("returns parsed JSON array on success", async () => {
-      const fakeStudents = [{ uniqueId: "123", firstName: "Lucas", runInfo: [] }];
+      const fakeStudents = [{ uniqueId: "123", firstName: "Alex", runInfo: [] }];
       globalThis.fetch = async () => ({
         ok: true,
         json: async () => fakeStudents,

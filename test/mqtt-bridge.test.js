@@ -130,9 +130,9 @@ describe("MqttBridge", () => {
 
   describe("publishStudent()", () => {
     const makeStudent = (overrides = {}) => ({
-      uniqueId: "2008416",
-      firstName: "Lucas",
-      lastName: "Gregory",
+      uniqueId: "1234567",
+      firstName: "Alex",
+      lastName: "Sample",
       currentRun: {
         runId: 147,
         busNumber: "BUS 012",
@@ -157,12 +157,12 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
 
       const topics = publishCalls.map((c) => c[0]);
-      assert.ok(topics.includes("homeassistant/device_tracker/myride_student_2008416/config"));
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_speed/config"));
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_heading/config"));
-      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_moving/config"));
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_bus/config"));
-      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_substitute/config"));
+      assert.ok(topics.includes("homeassistant/device_tracker/myride_student_1234567/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_speed/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_heading/config"));
+      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_1234567_moving/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_bus/config"));
+      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_1234567_substitute/config"));
     });
 
     it("device name is the student's display name", () => {
@@ -170,12 +170,12 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
 
       const trackerCall = publishCalls.find(
-        (c) => c[0] === "homeassistant/device_tracker/myride_student_2008416/config"
+        (c) => c[0] === "homeassistant/device_tracker/myride_student_1234567/config"
       );
       const payload = JSON.parse(trackerCall[1]);
-      assert.equal(payload.device.name, "Lucas Gregory");
+      assert.equal(payload.device.name, "Alex Sample");
       assert.equal(payload.source_type, "gps");
-      assert.deepEqual(payload.device.identifiers, ["myride_student_2008416"]);
+      assert.deepEqual(payload.device.identifiers, ["myride_student_1234567"]);
     });
 
     it("discovery configs are retained", () => {
@@ -202,7 +202,7 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
 
       const stateCall = publishCalls.find(
-        (c) => c[0] === "myride/student/2008416/state"
+        (c) => c[0] === "myride/student/1234567/state"
       );
       assert.ok(stateCall);
       assert.equal(stateCall[1], "BUS 057");
@@ -212,7 +212,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
 
-      const subCall = publishCalls.find((c) => c[0] === "myride/student/2008416/substitute");
+      const subCall = publishCalls.find((c) => c[0] === "myride/student/1234567/substitute");
       assert.ok(subCall);
       assert.equal(subCall[1], "ON");
     });
@@ -223,7 +223,7 @@ describe("MqttBridge", () => {
       student.currentRun = { ...student.currentRun, activeVehicle: "BUS 012", isSubstitute: false };
       bridge.publishStudent(student);
 
-      const subCall = publishCalls.find((c) => c[0] === "myride/student/2008416/substitute");
+      const subCall = publishCalls.find((c) => c[0] === "myride/student/1234567/substitute");
       assert.ok(subCall);
       assert.equal(subCall[1], "OFF");
     });
@@ -232,20 +232,20 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
 
-      const attrCall = publishCalls.find((c) => c[0] === "myride/student/2008416/attributes");
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/1234567/attributes");
       assert.ok(attrCall);
       const attrs = JSON.parse(attrCall[1]);
       assert.equal(attrs.regular_bus, "BUS 012");
       assert.equal(attrs.active_bus, "BUS 057");
       assert.equal(attrs.is_substitute, true);
-      assert.equal(attrs.student_name, "Lucas Gregory");
+      assert.equal(attrs.student_name, "Alex Sample");
     });
 
     it("attributes include todays_runs array", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
 
-      const attrCall = publishCalls.find((c) => c[0] === "myride/student/2008416/attributes");
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/1234567/attributes");
       const attrs = JSON.parse(attrCall[1]);
       assert.equal(Array.isArray(attrs.todays_runs), true);
       assert.equal(attrs.todays_runs.length, 2);
@@ -268,7 +268,7 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
 
       const subConfig = publishCalls.find(
-        (c) => c[0] === "homeassistant/binary_sensor/myride_student_2008416_substitute/config"
+        (c) => c[0] === "homeassistant/binary_sensor/myride_student_1234567_substitute/config"
       );
       const payload = JSON.parse(subConfig[1]);
       assert.equal(payload.device_class, "problem");
@@ -277,9 +277,9 @@ describe("MqttBridge", () => {
 
   describe("publishStudentLocation()", () => {
     const makeStudent = () => ({
-      uniqueId: "2008416",
-      firstName: "Lucas",
-      lastName: "Gregory",
+      uniqueId: "1234567",
+      firstName: "Alex",
+      lastName: "Sample",
       currentRun: {
         runId: 147,
         busNumber: "BUS 012",
@@ -321,11 +321,11 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(makeStudent(), makeLocation());
 
       const topics = publishCalls.map((c) => c[0]);
-      assert.ok(topics.includes("myride/student/2008416/gps_state"));
-      assert.ok(topics.includes("myride/student/2008416/gps_attributes"));
-      assert.ok(topics.includes("myride/student/2008416/speed"));
-      assert.ok(topics.includes("myride/student/2008416/heading"));
-      assert.ok(topics.includes("myride/student/2008416/moving"));
+      assert.ok(topics.includes("myride/student/1234567/gps_state"));
+      assert.ok(topics.includes("myride/student/1234567/gps_attributes"));
+      assert.ok(topics.includes("myride/student/1234567/speed"));
+      assert.ok(topics.includes("myride/student/1234567/heading"));
+      assert.ok(topics.includes("myride/student/1234567/moving"));
     });
 
     it("gps_state is the reset payload for HA zone detection", () => {
@@ -333,7 +333,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), makeLocation());
 
-      const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/gps_state");
+      const stateCall = publishCalls.find((c) => c[0] === "myride/student/1234567/gps_state");
       assert.equal(stateCall[1], "None");
     });
 
@@ -342,7 +342,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), makeLocation());
 
-      const attrCall = publishCalls.find((c) => c[0] === "myride/student/2008416/gps_attributes");
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/1234567/gps_attributes");
       const attrs = JSON.parse(attrCall[1]);
       assert.equal(attrs.latitude, 40.689);
       assert.equal(attrs.longitude, -74.044);
@@ -357,9 +357,9 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), makeLocation({ speed: 0 }));
 
-      const speedCall = publishCalls.find((c) => c[0] === "myride/student/2008416/speed");
+      const speedCall = publishCalls.find((c) => c[0] === "myride/student/1234567/speed");
       assert.equal(speedCall[1], "0");
-      const movingCall = publishCalls.find((c) => c[0] === "myride/student/2008416/moving");
+      const movingCall = publishCalls.find((c) => c[0] === "myride/student/1234567/moving");
       assert.equal(movingCall[1], "OFF");
     });
   });
@@ -377,9 +377,9 @@ describe("MqttBridge", () => {
       etaMinutes: 0,
     };
     const makeStudent = (stop = myStop) => ({
-      uniqueId: "2008416",
-      firstName: "Lucas",
-      lastName: "Gregory",
+      uniqueId: "1234567",
+      firstName: "Alex",
+      lastName: "Sample",
       currentRun: {
         runId: 719,
         busNumber: "BUS 012",
@@ -407,19 +407,19 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
       const topics = publishCalls.map((c) => c[0]);
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_my_stop/config"));
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_distance_to_stop/config"));
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_eta/config"));
-      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_approaching/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_my_stop/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_distance_to_stop/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_eta/config"));
+      assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_1234567_approaching/config"));
     });
 
     it("my_stop state is the stop name; attributes carry schedule and position", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
-      const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop");
+      const stateCall = publishCalls.find((c) => c[0] === "myride/student/1234567/my_stop");
       assert.equal(stateCall[1], "MAPLE ST @ 3RD AVE");
       const attrs = JSON.parse(
-        publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop_attributes")[1]
+        publishCalls.find((c) => c[0] === "myride/student/1234567/my_stop_attributes")[1]
       );
       assert.equal(attrs.stop_id, 1638);
       assert.equal(attrs.action, "Pickup");
@@ -431,7 +431,7 @@ describe("MqttBridge", () => {
     it("my_stop state is 'None' (HA unknown) when the run has no myStop", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent(null));
-      const stateCall = publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop");
+      const stateCall = publishCalls.find((c) => c[0] === "myride/student/1234567/my_stop");
       assert.equal(stateCall[1], "None");
     });
 
@@ -439,8 +439,8 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
       const topics = publishCalls.map((c) => c[0]);
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_scheduled_time/config"));
-      assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_stops_away/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_scheduled_time/config"));
+      assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_stops_away/config"));
     });
 
     it("evicts legacy retained per-fix values on first discovery (upgrade migration)", () => {
@@ -448,7 +448,7 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
       for (const t of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
         const evict = publishCalls.find(
-          (c) => c[0] === `myride/student/2008416/${t}` && c[1] === "" && c[2] && c[2].retain === true
+          (c) => c[0] === `myride/student/1234567/${t}` && c[1] === "" && c[2] && c[2].retain === true
         );
         assert.ok(evict, `expected a retained empty payload evicting stale ${t}`);
       }
@@ -459,7 +459,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent()); // same student, no re-eviction
       const evictions = publishCalls.filter(
-        (c) => c[0] === "myride/student/2008416/eta" && c[1] === "" && c[2] && c[2].retain === true
+        (c) => c[0] === "myride/student/1234567/eta" && c[1] === "" && c[2] && c[2].retain === true
       );
       assert.equal(evictions.length, 0);
     });
@@ -468,7 +468,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent());
       assert.equal(
-        publishCalls.find((c) => c[0] === "myride/student/2008416/scheduled_time")[1],
+        publishCalls.find((c) => c[0] === "myride/student/1234567/scheduled_time")[1],
         "09:01"
       );
     });
@@ -478,7 +478,7 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
       // The poll may clear stops_away to "None" (via _clearStopProgress) or evict a
       // stale retained value with "" — but must never publish a computed count.
-      const stateCalls = publishCalls.filter((c) => c[0] === "myride/student/2008416/stops_away");
+      const stateCalls = publishCalls.filter((c) => c[0] === "myride/student/1234567/stops_away");
       for (const call of stateCalls) {
         assert.ok(
           call[1] === "None" || call[1] === "",
@@ -493,7 +493,7 @@ describe("MqttBridge", () => {
       s.currentRun.scheduledTime = null;
       bridge.publishStudent(s);
       assert.equal(
-        publishCalls.find((c) => c[0] === "myride/student/2008416/scheduled_time")[1],
+        publishCalls.find((c) => c[0] === "myride/student/1234567/scheduled_time")[1],
         "None"
       );
     });
@@ -503,10 +503,10 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), near);
 
-      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1]);
       assert.ok(dist > 0 && dist < 500, `expected <500m, got ${dist}`);
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "ON");
-      const eta = publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1];
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "ON");
+      const eta = publishCalls.find((c) => c[0] === "myride/student/1234567/eta")[1];
       assert.ok(Number(eta) >= 0, `expected numeric eta, got ${eta}`);
     });
 
@@ -514,15 +514,15 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), far);
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
 
     it("sets eta to None when stopped, but still publishes distance", () => {
       bridge.publishStudent(makeStudent());
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), { ...near, speed: 0 });
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "None");
-      assert.ok(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop"));
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/eta")[1], "None");
+      assert.ok(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop"));
     });
 
     it("publishes None distance/eta and OFF approaching when the stop has no coordinates", () => {
@@ -530,9 +530,9 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent(noCoords));
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(noCoords), near);
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/eta")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
 
     it("honors a custom approachRadiusMeters", () => {
@@ -540,7 +540,7 @@ describe("MqttBridge", () => {
       tight.publishStudent(makeStudent());
       publishCalls.length = 0;
       tight.publishStudentLocation(makeStudent(), near); // ~145m away, radius 50
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
 
     it("falls back to the 500m default for a NaN/≤0 approachRadiusMeters", () => {
@@ -555,7 +555,7 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), near);
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "ON");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "ON");
 
       // Poll switches to a different stop (e.g. AM→PM) with no location yet.
       publishCalls.length = 0;
@@ -563,17 +563,17 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent(otherStop));
 
       // Progress topics must be blanked (None → unknown), not left showing the previous stop.
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/eta")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
 
     it("does not re-clear progress when the stop is unchanged between polls", () => {
       bridge.publishStudent(makeStudent());
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent()); // same stop id
-      assert.equal(publishCalls.filter((c) => c[0] === "myride/student/2008416/approaching").length, 0);
-      assert.equal(publishCalls.filter((c) => c[0] === "myride/student/2008416/distance_to_stop").length, 0);
+      assert.equal(publishCalls.filter((c) => c[0] === "myride/student/1234567/approaching").length, 0);
+      assert.equal(publishCalls.filter((c) => c[0] === "myride/student/1234567/distance_to_stop").length, 0);
     });
 
     it("clears progress when the stop becomes unavailable", () => {
@@ -581,8 +581,8 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(makeStudent(), near);
       publishCalls.length = 0;
       bridge.publishStudent(makeStudent(null)); // no myStop
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
 
     it("clears progress at the AM→PM transition even though the stop id is unchanged", () => {
@@ -590,25 +590,25 @@ describe("MqttBridge", () => {
       bridge.publishStudent(makeStudent());
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(), near);
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "ON");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "ON");
 
       // PM run: same stopId (1638) but different runId + active vehicle.
       const pm = makeStudent();
       pm.currentRun = { ...pm.currentRun, runId: 794, activeVehicle: "BUS 057" };
       publishCalls.length = 0;
       bridge.publishStudent(pm);
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
 
     it("clears progress and marks the stop unknown when there is no current run", () => {
       bridge.publishStudent(makeStudent());
       bridge.publishStudentLocation(makeStudent(), near); // approaching ON, retained
       publishCalls.length = 0;
-      bridge.publishStudent({ uniqueId: "2008416", currentRun: null }); // no-school day
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/my_stop")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1], "None");
-      assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/approaching")[1], "OFF");
+      bridge.publishStudent({ uniqueId: "1234567", currentRun: null }); // no-school day
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/my_stop")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1], "None");
+      assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/approaching")[1], "OFF");
     });
   });
 
@@ -653,9 +653,9 @@ describe("MqttBridge", () => {
       actionType: "Pickup", stopTime: "1900-01-01T09:01:00", stopTimeMinutes: 541,
     };
     const makeStudent = (stop) => ({
-      uniqueId: "2008416",
-      firstName: "Lucas",
-      lastName: "Gregory",
+      uniqueId: "1234567",
+      firstName: "Alex",
+      lastName: "Sample",
       currentRun: {
         runId: 719, busNumber: "BUS 012", activeVehicle: "BUS 012",
         isSubstitute: false, myStop: stop, myStopSeq: 2, totalStops: 3,
@@ -788,10 +788,10 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0));
 
       // Route remaining is exactly 2000; crow-flies to the pin (0.02°) is ~2224 m.
-      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1]);
       assert.equal(dist, 2000);
       // ETA = 2000 m ÷ (20 mph × 26.8224) ≈ 3.7 → 4 min.
-      const eta = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1]);
+      const eta = Number(publishCalls.find((c) => c[0] === "myride/student/1234567/eta")[1]);
       assert.equal(eta, 4);
     });
 
@@ -800,7 +800,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       bridge.publishStudentLocation(makeStudent(plainStop), at(41.51, -72.0));
 
-      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1]);
       // Crow-flies over 0.02° latitude ≈ 2224 m — clearly not the 2000 m route value.
       assert.ok(dist > 2200 && dist < 2250, `expected ~2224m haversine, got ${dist}`);
     });
@@ -810,7 +810,7 @@ describe("MqttBridge", () => {
       publishCalls.length = 0;
       // Off-route east: route snap exceeds 150 m → haversine to the pin instead.
       bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98));
-      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/2008416/distance_to_stop")[1]);
+      const dist = Number(publishCalls.find((c) => c[0] === "myride/student/1234567/distance_to_stop")[1]);
       assert.ok(dist > 2000, `expected haversine (>2000m), got ${dist}`);
     });
 
@@ -827,11 +827,11 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(makeStudent(shortRouteStop), at(41.51, -72.0));
 
       const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
-      const dist = Number(last("myride/student/2008416/distance_to_stop"));
+      const dist = Number(last("myride/student/1234567/distance_to_stop"));
       assert.ok(dist > 2000, `expected haversine fallback (~2224 m), got ${dist}`);
-      assert.equal(last("myride/student/2008416/approaching"), "OFF");
-      assert.equal(last("myride/student/2008416/route_snap_ok"), "OFF");
-      assert.equal(last("myride/student/2008416/stops_away"), "None");
+      assert.equal(last("myride/student/1234567/approaching"), "OFF");
+      assert.equal(last("myride/student/1234567/route_snap_ok"), "OFF");
+      assert.equal(last("myride/student/1234567/stops_away"), "None");
     });
 
     it("accepts a post-stop fix once progression is established, then blanks it as served", () => {
@@ -858,10 +858,10 @@ describe("MqttBridge", () => {
       );
 
       const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
-      assert.equal(last("myride/student/2008416/route_snap_ok"), "ON");
-      assert.equal(last("myride/student/2008416/distance_to_stop"), "None");
-      assert.equal(last("myride/student/2008416/eta"), "None");
-      assert.equal(last("myride/student/2008416/stops_away"), "None");
+      assert.equal(last("myride/student/1234567/route_snap_ok"), "ON");
+      assert.equal(last("myride/student/1234567/distance_to_stop"), "None");
+      assert.equal(last("myride/student/1234567/eta"), "None");
+      assert.equal(last("myride/student/1234567/stops_away"), "None");
     });
 
     it("keeps the arrived 0/0 values while the bus is still at the stop (within radius)", () => {
@@ -876,10 +876,10 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(makeStudent(routeStop), at(41.53, -72.0, { logTime: "2026-09-11T13:01:30Z", speed: 0 }));
 
       const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
-      assert.equal(last("myride/student/2008416/route_snap_ok"), "ON");
-      assert.equal(last("myride/student/2008416/approaching"), "ON");
-      assert.equal(Number(last("myride/student/2008416/distance_to_stop")), 0);
-      assert.equal(last("myride/student/2008416/stops_away"), "0");
+      assert.equal(last("myride/student/1234567/route_snap_ok"), "ON");
+      assert.equal(last("myride/student/1234567/approaching"), "ON");
+      assert.equal(Number(last("myride/student/1234567/distance_to_stop")), 0);
+      assert.equal(last("myride/student/1234567/stops_away"), "0");
     });
 
     it("does not freeze distance/stops_away at 0 as the bus drives away after serving the stop", () => {
@@ -904,10 +904,10 @@ describe("MqttBridge", () => {
           student,
           at(41.53, -72.0, { logTime: new Date(Date.parse("2026-09-11T13:01:00Z") + ms).toISOString() })
         );
-        assert.equal(last("myride/student/2008416/distance_to_stop"), "None", `distance served @ +${ms}ms`);
-        assert.equal(last("myride/student/2008416/eta"), "None", `eta served @ +${ms}ms`);
-        assert.equal(last("myride/student/2008416/stops_away"), "None", `stops_away served @ +${ms}ms`);
-        assert.equal(last("myride/student/2008416/approaching"), "OFF", `approaching served @ +${ms}ms`);
+        assert.equal(last("myride/student/1234567/distance_to_stop"), "None", `distance served @ +${ms}ms`);
+        assert.equal(last("myride/student/1234567/eta"), "None", `eta served @ +${ms}ms`);
+        assert.equal(last("myride/student/1234567/stops_away"), "None", `stops_away served @ +${ms}ms`);
+        assert.equal(last("myride/student/1234567/approaching"), "OFF", `approaching served @ +${ms}ms`);
       }
     });
 
@@ -936,11 +936,11 @@ describe("MqttBridge", () => {
           student,
           at(41.53, -71.98, { logTime: new Date(t0 + 30000 + i * 30000).toISOString() })
         );
-        assert.equal(last("myride/student/2008416/distance_to_stop"), "None", `distance off-route fix #${i}`);
-        assert.equal(last("myride/student/2008416/eta"), "None", `eta off-route fix #${i}`);
-        assert.equal(last("myride/student/2008416/stops_away"), "None", `stops_away off-route fix #${i}`);
+        assert.equal(last("myride/student/1234567/distance_to_stop"), "None", `distance off-route fix #${i}`);
+        assert.equal(last("myride/student/1234567/eta"), "None", `eta off-route fix #${i}`);
+        assert.equal(last("myride/student/1234567/stops_away"), "None", `stops_away off-route fix #${i}`);
       }
-      assert.ok(bridge.stopServedByStudent.get("2008416"), "served latch set");
+      assert.ok(bridge.stopServedByStudent.get("1234567"), "served latch set");
 
       // The AM→PM flip (same stopId, different runId) is a new occurrence: the latch
       // does not carry over, so an approaching PM fix publishes a numeric distance again
@@ -951,7 +951,7 @@ describe("MqttBridge", () => {
       bridge.publishStudent(pmRun);
       publishCalls.length = 0;
       bridge.publishStudentLocation(pmRun, at(41.51, -72.0, { logTime: new Date(t0 + 600000).toISOString() }));
-      assert.notEqual(last("myride/student/2008416/distance_to_stop"), "None", "PM run is a fresh occurrence, not served");
+      assert.notEqual(last("myride/student/1234567/distance_to_stop"), "None", "PM run is a fresh occurrence, not served");
     });
 
     it("does not carry the served latch into the next service day (stable run/stop)", () => {
@@ -970,13 +970,13 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(student, at(41.52, -72.0, { logTime: "2026-09-11T13:01:00Z" }));
       bridge.publishStudentLocation(student, at(41.53, -72.0, { logTime: "2026-09-11T13:01:30Z" }));
       bridge.publishStudentLocation(student, at(41.53, -71.98, { logTime: "2026-09-11T13:02:00Z" }));
-      assert.equal(last("myride/student/2008416/distance_to_stop"), "None", "served on day 1");
+      assert.equal(last("myride/student/1234567/distance_to_stop"), "None", "served on day 1");
 
       // Day 2, same run/stop: a fix must NOT be treated as served — distance publishes
       // a value again (America/New_York: 2026-09-12 is a different service date).
       publishCalls.length = 0;
       bridge.publishStudentLocation(student, at(41.53, -71.98, { logTime: "2026-09-12T13:02:00Z" }));
-      assert.notEqual(last("myride/student/2008416/distance_to_stop"), "None", "day 2 is a fresh occurrence");
+      assert.notEqual(last("myride/student/1234567/distance_to_stop"), "None", "day 2 is a fresh occurrence");
     });
 
     it("keeps delay/predicted blank when a post-serve backward-jitter snap goes positive", () => {
@@ -1007,18 +1007,18 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(student, at(41.52, -72.0, { logTime: new Date(t0).toISOString() }));
       bridge.publishStudentLocation(student, at(41.53, -72.0, { logTime: new Date(t0 + 30000).toISOString() }));
       bridge.publishStudentLocation(student, at(41.53, -71.98, { logTime: new Date(t0 + 60000).toISOString() }));
-      assert.equal(bridge.stopServedByStudent.get("2008416"), true, "served latched");
+      assert.equal(bridge.stopServedByStudent.get("1234567"), true, "served latched");
 
       // Backward-jitter fix: snaps to the cum-2970 vertex (30 m back, within the 50 m
       // tolerance) → accepted with routeMeters ≈ 30 (> 0) and back inside the radius.
       publishCalls.length = 0;
       bridge.publishStudentLocation(student, at(41.5297, -72.0, { logTime: new Date(t0 + 90000).toISOString() }));
       // All five route-derived sensors stay blank because the occurrence is still served.
-      assert.equal(last("myride/student/2008416/delay"), "None", "delay stays blank when served");
-      assert.equal(last("myride/student/2008416/predicted_arrival"), "None", "predicted stays blank when served");
-      assert.equal(last("myride/student/2008416/distance_to_stop"), "None");
-      assert.equal(last("myride/student/2008416/eta"), "None");
-      assert.equal(last("myride/student/2008416/stops_away"), "None");
+      assert.equal(last("myride/student/1234567/delay"), "None", "delay stays blank when served");
+      assert.equal(last("myride/student/1234567/predicted_arrival"), "None", "predicted stays blank when served");
+      assert.equal(last("myride/student/1234567/distance_to_stop"), "None");
+      assert.equal(last("myride/student/1234567/eta"), "None");
+      assert.equal(last("myride/student/1234567/stops_away"), "None");
     });
 
     it("rejects a distant zero-distance snap when there is no baseline (wrong snap past the stop)", () => {
@@ -1034,9 +1034,9 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(makeStudent(midRouteStop), at(41.53, -72.0)); // past the stop, no baseline
 
       const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
-      assert.equal(last("myride/student/2008416/route_snap_ok"), "OFF");
-      assert.ok(Number(last("myride/student/2008416/distance_to_stop")) > 1000);
-      assert.equal(last("myride/student/2008416/stops_away"), "None");
+      assert.equal(last("myride/student/1234567/route_snap_ok"), "OFF");
+      assert.ok(Number(last("myride/student/1234567/distance_to_stop")) > 1000);
+      assert.equal(last("myride/student/1234567/stops_away"), "None");
     });
 
     it("does not reuse a stale baseline for the post-stop exemption after route mode is lost", () => {
@@ -1063,9 +1063,9 @@ describe("MqttBridge", () => {
       bridge.publishStudentLocation(s, at(41.53, -72.0, { logTime: "2026-09-11T13:06:00Z" }));
 
       const last = (topic) => publishCalls.find((c) => c[0] === topic)[1];
-      assert.equal(last("myride/student/2008416/route_snap_ok"), "OFF");
-      assert.ok(Number(last("myride/student/2008416/distance_to_stop")) > 1000);
-      assert.equal(last("myride/student/2008416/stops_away"), "None");
+      assert.equal(last("myride/student/1234567/route_snap_ok"), "OFF");
+      assert.ok(Number(last("myride/student/1234567/distance_to_stop")) > 1000);
+      assert.equal(last("myride/student/1234567/stops_away"), "None");
     });
 
     it("resets the wrong-pass guard when stop progress is cleared", () => {
@@ -1075,7 +1075,7 @@ describe("MqttBridge", () => {
       const moved = makeStudent(routeStop);
       moved.currentRun = { ...moved.currentRun, runId: 800, activeVehicle: "BUS 057" };
       bridge.publishStudent(moved);
-      assert.equal(bridge.lastRouteCumByStudent.has("2008416"), false);
+      assert.equal(bridge.lastRouteCumByStudent.has("1234567"), false);
     });
 
     it("holds route-derived sensors through a transient off-route gap, then blanks", () => {
@@ -1083,8 +1083,8 @@ describe("MqttBridge", () => {
         const hit = [...publishCalls].reverse().find((c) => c[0] === topic);
         return hit ? hit[1] : undefined;
       };
-      const distTopic = "myride/student/2008416/distance_to_stop";
-      const stopsTopic = "myride/student/2008416/stops_away";
+      const distTopic = "myride/student/1234567/distance_to_stop";
+      const stopsTopic = "myride/student/1234567/stops_away";
       const student = makeStudent(routeStop);
       bridge.publishStudent(student);
 
@@ -1128,18 +1128,18 @@ describe("MqttBridge", () => {
         publishCalls.length = 0;
         bridge.publishStudent(makeStudent(routeStop));
         const topics = publishCalls.map((c) => c[0]);
-        assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_delay/config"));
-        assert.ok(topics.includes("homeassistant/sensor/myride_student_2008416_predicted_arrival/config"));
+        assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_delay/config"));
+        assert.ok(topics.includes("homeassistant/sensor/myride_student_1234567_predicted_arrival/config"));
       });
 
       it("publishes signed delay and an ISO predicted arrival for a mid-route bus", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0)); // cum 1000
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "7");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "7");
         // Predicted 09:08 on 2026-09-11 (EDT) as an offset-aware timestamp.
         assert.equal(
-          publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1],
+          publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1],
           "2026-09-11T09:08:00-04:00"
         );
       });
@@ -1154,9 +1154,9 @@ describe("MqttBridge", () => {
           makeStudent(routeStop),
           at(41.51, -72.0, { logTime: "2026-09-11T12:52:00Z" })
         );
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "-2");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "-2");
         assert.equal(
-          publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1],
+          publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1],
           "2026-09-11T08:59:00-04:00"
         );
       });
@@ -1166,10 +1166,10 @@ describe("MqttBridge", () => {
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0, { speed: 0 }));
         // ETA goes unknown when stopped, but the schedule-anchored delay is not.
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/eta")[1], "None");
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "7");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/eta")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "7");
         assert.equal(
-          publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1],
+          publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1],
           "2026-09-11T09:08:00-04:00"
         );
       });
@@ -1178,24 +1178,24 @@ describe("MqttBridge", () => {
         bridge.publishStudent(makeStudent(plainStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(plainStop), at(41.51, -72.0));
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "None");
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1], "None");
       });
 
       it("blanks delay/predicted to None once the bus reaches the stop (route distance 0)", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.53, -72.0)); // at stop vertex
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "None");
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1], "None");
       });
 
       it("blanks delay/predicted to None when the bus is off-route (no trusted snap)", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98)); // off-route
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "None");
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1], "None");
       });
 
       it("blanks an implausibly large delay (wrong-run schedule signature)", () => {
@@ -1209,10 +1209,10 @@ describe("MqttBridge", () => {
           makeStudent(routeStop),
           at(41.51, -72.0, { logTime: "2026-09-11T19:01:00Z" })
         );
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/delay")[1], "None");
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/predicted_arrival")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/delay")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/predicted_arrival")[1], "None");
         // The route snap itself is fine — only the schedule-derived delay is nonsense.
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/route_snap_ok")[1], "ON");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/route_snap_ok")[1], "ON");
       });
     });
 
@@ -1221,21 +1221,21 @@ describe("MqttBridge", () => {
         publishCalls.length = 0;
         bridge.publishStudent(makeStudent(routeStop));
         const topics = publishCalls.map((c) => c[0]);
-        assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_2008416_route_snap_ok/config"));
+        assert.ok(topics.includes("homeassistant/binary_sensor/myride_student_1234567_route_snap_ok/config"));
       });
 
       it("is ON for an on-route fix", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0));
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/route_snap_ok")[1], "ON");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/route_snap_ok")[1], "ON");
       });
 
       it("is OFF when the bus is off-route with no baseline to hold", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98)); // off-route, first fix
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/route_snap_ok")[1], "OFF");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/route_snap_ok")[1], "OFF");
       });
     });
 
@@ -1247,7 +1247,7 @@ describe("MqttBridge", () => {
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -72.0)); // cum 1000
         // Stops at cum 2000 remain ahead; cum 0 and 1000 are passed → 1 stop away.
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1], "1");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/stops_away")[1], "1");
       });
 
       it("counts all upstream stops when the bus is at the route start", () => {
@@ -1255,28 +1255,28 @@ describe("MqttBridge", () => {
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.50, -72.0)); // cum 0
         // Stops at cum 1000 and 2000 are ahead (cum 0 is the bus's own position) → 2.
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1], "2");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/stops_away")[1], "2");
       });
 
       it("reports 0 once the bus passes the last upstream stop", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.53, -72.0)); // cum 3000 (at stop)
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1], "0");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/stops_away")[1], "0");
       });
 
       it("publishes None when route mode is unavailable (no geometry)", () => {
         bridge.publishStudent(makeStudent(plainStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(plainStop), at(41.51, -72.0));
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/stops_away")[1], "None");
       });
 
       it("publishes None when the bus is off-route", () => {
         bridge.publishStudent(makeStudent(routeStop));
         publishCalls.length = 0;
         bridge.publishStudentLocation(makeStudent(routeStop), at(41.51, -71.98)); // off-route
-        assert.equal(publishCalls.find((c) => c[0] === "myride/student/2008416/stops_away")[1], "None");
+        assert.equal(publishCalls.find((c) => c[0] === "myride/student/1234567/stops_away")[1], "None");
       });
     });
   });

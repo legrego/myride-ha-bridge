@@ -18,25 +18,25 @@ IDs stay stable no matter which bus number they happen to be on. The bridge lear
 student's current bus from the `/api/student` feed and maps incoming GPS to the right
 student automatically.
 
-For a student with ID `2008416` you get:
+For a student with ID `1234567` you get:
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| `device_tracker.myride_student_2008416` | Device Tracker | Map pin with lat/lng (follows today's bus) |
-| `sensor.myride_student_2008416_speed` | Sensor | Speed in mph |
-| `sensor.myride_student_2008416_heading` | Sensor | Compass heading (degrees) |
-| `binary_sensor.myride_student_2008416_moving` | Binary Sensor | Is the bus in motion? |
-| `sensor.myride_student_2008416_bus` | Sensor | Which bus the student is on today |
-| `binary_sensor.myride_student_2008416_substitute` | Binary Sensor | Is today's bus a substitute? (ON = yes) |
-| `sensor.myride_student_2008416_my_stop` | Sensor | The student's own stop name |
-| `sensor.myride_student_2008416_scheduled_time` | Sensor | Scheduled stop time (district-local HH:MM) |
-| `sensor.myride_student_2008416_stops_away` | Sensor | Route-derived count of stops still ahead |
-| `sensor.myride_student_2008416_distance_to_stop` | Sensor | Distance to the student's stop |
-| `sensor.myride_student_2008416_eta` | Sensor | Speed-based ETA to the student's stop |
-| `sensor.myride_student_2008416_delay` | Sensor | Minutes behind/ahead of schedule |
-| `sensor.myride_student_2008416_predicted_arrival` | Sensor | Schedule-anchored predicted arrival timestamp |
-| `binary_sensor.myride_student_2008416_approaching` | Binary Sensor | Is the bus within the approach radius of the stop? |
-| `binary_sensor.myride_student_2008416_route_snap_ok` | Binary Sensor | Is stop-progress currently using trusted route mode? |
+| `device_tracker.myride_student_1234567` | Device Tracker | Map pin with lat/lng (follows today's bus) |
+| `sensor.myride_student_1234567_speed` | Sensor | Speed in mph |
+| `sensor.myride_student_1234567_heading` | Sensor | Compass heading (degrees) |
+| `binary_sensor.myride_student_1234567_moving` | Binary Sensor | Is the bus in motion? |
+| `sensor.myride_student_1234567_bus` | Sensor | Which bus the student is on today |
+| `binary_sensor.myride_student_1234567_substitute` | Binary Sensor | Is today's bus a substitute? (ON = yes) |
+| `sensor.myride_student_1234567_my_stop` | Sensor | The student's own stop name |
+| `sensor.myride_student_1234567_scheduled_time` | Sensor | Scheduled stop time (district-local HH:MM) |
+| `sensor.myride_student_1234567_stops_away` | Sensor | Route-derived count of stops still ahead |
+| `sensor.myride_student_1234567_distance_to_stop` | Sensor | Distance to the student's stop |
+| `sensor.myride_student_1234567_eta` | Sensor | Speed-based ETA to the student's stop |
+| `sensor.myride_student_1234567_delay` | Sensor | Minutes behind/ahead of schedule |
+| `sensor.myride_student_1234567_predicted_arrival` | Sensor | Schedule-anchored predicted arrival timestamp |
+| `binary_sensor.myride_student_1234567_approaching` | Binary Sensor | Is the bus within the approach radius of the stop? |
+| `binary_sensor.myride_student_1234567_route_snap_ok` | Binary Sensor | Is stop-progress currently using trusted route mode? |
 | `binary_sensor.myride_bridge_credentials` | Binary Sensor | Credential problem alert (ON = expired) |
 
 > Raw per-bus entities (`device_tracker.myride_bus_*`) are no longer published. On
@@ -263,20 +263,20 @@ automation:
   - alias: "School Bus Approaching"
     trigger:
       - platform: state
-        entity_id: binary_sensor.myride_student_2008416_moving
+        entity_id: binary_sensor.myride_student_1234567_moving
         to: "on"
     condition:
       - condition: template
         value_template: >
-          {% set bus_lat = state_attr('device_tracker.myride_student_2008416', 'latitude') %}
-          {% set bus_lng = state_attr('device_tracker.myride_student_2008416', 'longitude') %}
+          {% set bus_lat = state_attr('device_tracker.myride_student_1234567', 'latitude') %}
+          {% set bus_lng = state_attr('device_tracker.myride_student_1234567', 'longitude') %}
           {{ distance(bus_lat, bus_lng, 'zone.home') | float < 1.5 }}
     action:
       - service: notify.mobile_app_your_phone
         data:
           title: "🚌 Bus Approaching!"
           message: >
-            Bus is nearby at {{ states('sensor.myride_student_2008416_speed') }} mph.
+            Bus is nearby at {{ states('sensor.myride_student_1234567_speed') }} mph.
           data:
             ttl: 0
             priority: high
@@ -289,7 +289,7 @@ automation:
   - alias: "Bus Left School - Get Ready"
     trigger:
       - platform: state
-        entity_id: binary_sensor.myride_student_2008416_moving
+        entity_id: binary_sensor.myride_student_1234567_moving
         from: "off"
         to: "on"
     condition:
@@ -309,7 +309,7 @@ automation:
 ```yaml
 type: map
 entities:
-  - entity: device_tracker.myride_student_2008416
+  - entity: device_tracker.myride_student_1234567
     name: School Bus
   - entity: zone.home
 default_zoom: 14

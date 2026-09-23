@@ -47,9 +47,9 @@ const PM_RUN = {
 };
 
 const STUDENT_RAW = {
-  uniqueId: 2008416,
-  firstName: "Lucas",
-  lastName: "Gregory",
+  uniqueId: 1234567,
+  firstName: "Alex",
+  lastName: "Sample",
   runInfo: [AM_RUN, PM_RUN],
 };
 
@@ -215,7 +215,7 @@ describe("timezone-correct run selection (regression for substitute bug)", () =>
 describe("normalizeStudent()", () => {
   it("converts uniqueId to string", () => {
     const s = normalizeStudent(STUDENT_RAW, 9 * 60);
-    assert.equal(s.uniqueId, "2008416");
+    assert.equal(s.uniqueId, "1234567");
   });
 
   it("sets isSubstitute=true when activeVehicle differs from busNumber", () => {
@@ -802,7 +802,7 @@ describe("StudentTracker", () => {
 
     assert.ok(snapshot);
     assert.equal(snapshot.students.length, 1);
-    assert.equal(snapshot.students[0].firstName, "Lucas");
+    assert.equal(snapshot.students[0].firstName, "Alex");
     assert.ok(snapshot.asOf);
   });
 
