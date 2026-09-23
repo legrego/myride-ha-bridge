@@ -45,6 +45,8 @@ const { runSimulation } = require("./simulator");
 const { MyRideApi } = require("./myride-api");
 const { StudentTracker } = require("./student-tracker");
 const { FixOrderGuard } = require("./fix-order-guard");
+const { FeedMonitor, inRunWindow } = require("./feed-monitor");
+const { nowMinutesInTimeZone, formatMinutes } = require("./student-tracker");
 const { version } = require("./version");
 
 // ─── Configuration ───────────────────────────────────────────────
@@ -225,6 +227,11 @@ const busToStudents = new Map();
 // Per-bus monotonic ordering guard: drops replayed/out-of-order SignalR fixes so a
 // superseded location can't rewind the bus's route position (see fix-order-guard.js).
 const fixOrderGuard = new FixOrderGuard();
+// Per-bus feed health (silence, fix lag, guard drops) — see feed-monitor.js.
+const feedMonitor = new FeedMonitor();
+// How often the feed watchdog checks for silent buses.
+const FEED_WATCHDOG_INTERVAL_MS = 30_000;
+let feedWatchdogInterval = null;
 // Buses whose legacy per-bus HA entities have already been cleared (migration).
 const clearedBuses = new Set();
 
@@ -319,6 +326,14 @@ async function handleNewToken(newRefreshToken) {
       }
     }, 50 * 60 * 1000);
   }
+}
+
+function logDropSummary({ busId, count, newestLogTime, lastAcceptedMs }) {
+  console.log(
+    `[Bus] Dropped ${count} out-of-order fix(es) for ${busId} ` +
+    `(newest dropped logTime ${newestLogTime}, last accepted ` +
+    `${lastAcceptedMs != null ? new Date(lastAcceptedMs).toISOString() : "n/a"})`
+  );
 }
 
 function getBridgeStatus() {
@@ -431,14 +446,25 @@ async function main() {
     // can't rewind the bus's route position (which bounces distance/eta/stops_away
     // and flaps `moving`). Unparseable timestamps pass through — we can't compare.
     if (!fixOrderGuard.accept(data.assetUniqueId, data.logTime)) {
+      const lastMs = fixOrderGuard.lastAcceptedMs(data.assetUniqueId);
       if (config.logLevel === "debug") {
-        const lastMs = fixOrderGuard.lastAcceptedMs(data.assetUniqueId);
         console.log(
           `[Bus] Dropping out-of-order fix for ${data.assetUniqueId}: ` +
           `${data.logTime} <= last ${lastMs != null ? new Date(lastMs).toISOString() : "n/a"}`
         );
       }
+      // Summarized at the default level too: a stream of frozen-timestamp fixes is
+      // otherwise indistinguishable from a feed gap in the logs.
+      const summary = feedMonitor.onDropped(data.assetUniqueId, data.logTime, lastMs, Date.now());
+      if (summary) logDropSummary(summary);
       return;
+    }
+    const feed = feedMonitor.onAccepted(data.assetUniqueId, data.logTime, Date.now());
+    if (feed.resumed) {
+      console.log(
+        `[Feed] ${data.assetUniqueId} fixes resumed after ${Math.round(feed.gapMs / 1000)}s ` +
+        `(fix lag ${feed.lagMs != null ? `${Math.round(feed.lagMs / 1000)}s` : "?"}, logTime ${data.logTime})`
+      );
     }
     locationCount++;
     if (config.logLevel === "debug") {
@@ -497,6 +523,30 @@ async function main() {
 
   await signalrClient.start();
 
+  // Feed watchdog: flip feed_live OFF for students whose bus has gone silent, and
+  // warn once per silence episode when it happens during the run's window (when the
+  // bus should be driving). Fix gaps are upstream of the bridge (MyRide / the bus's
+  // AVL unit), so this can't prevent them — it makes them visible in HA and the log.
+  feedWatchdogInterval = setInterval(() => {
+    const nowMs = Date.now();
+    const nowMinutes = nowMinutesInTimeZone(new Date(nowMs), config.timeZone);
+    for (const [busId, students] of busToStudents) {
+      const s = feedMonitor.silence(busId, nowMs);
+      if (!s.silent) continue;
+      for (const student of students) mqttBridge.publishFeedLive(student, false);
+      const run = students.map((st) => st.currentRun).find((r) => inRunWindow(r, nowMinutes));
+      if (run && !s.warned && !refreshTokenExpired) {
+        feedMonitor.markWarned(busId);
+        console.warn(
+          `[Feed] no fix for ${busId} in ${Math.round(s.silentMs / 1000)}s during run ${run.runId} ` +
+          `window ${formatMinutes(run.windowStart)}–${formatMinutes(run.windowEnd)}; ` +
+          `last fix logTime ${s.lastLogTime || "none"}`
+        );
+      }
+    }
+    for (const summary of feedMonitor.flushDrops(nowMs)) logDropSummary(summary);
+  }, FEED_WATCHDOG_INTERVAL_MS);
+
   // Step 5: Periodic token refresh (every 50 minutes)
   refreshInterval = auth
     ? setInterval(async () => {
@@ -516,6 +566,7 @@ async function main() {
   async function shutdown(signal) {
     console.log(`\n[Bridge] ${signal} received, shutting down...`);
     if (refreshInterval) clearInterval(refreshInterval);
+    if (feedWatchdogInterval) clearInterval(feedWatchdogInterval);
     if (studentTracker) studentTracker.stop();
     await signalrClient.stop();
     await apiServer.stop();

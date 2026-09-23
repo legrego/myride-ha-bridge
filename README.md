@@ -37,6 +37,8 @@ For a student with ID `1234567` you get:
 | `sensor.myride_student_1234567_predicted_arrival` | Sensor | Schedule-anchored predicted arrival timestamp |
 | `binary_sensor.myride_student_1234567_approaching` | Binary Sensor | Is the bus within the approach radius of the stop? |
 | `binary_sensor.myride_student_1234567_route_snap_ok` | Binary Sensor | Is stop-progress currently using trusted route mode? |
+| `sensor.myride_student_1234567_last_fix` | Sensor | GPS time of the latest fix for the student's bus (diagnostic timestamp) |
+| `binary_sensor.myride_student_1234567_feed_live` | Binary Sensor | Has a fix arrived in the last 2 minutes? (diagnostic; OFF = tracking lost) |
 | `binary_sensor.myride_bridge_credentials` | Binary Sensor | Credential problem alert (ON = expired) |
 
 > Raw per-bus entities (`device_tracker.myride_bus_*`) are no longer published. On

@@ -1406,4 +1406,69 @@ describe("MqttBridge", () => {
       assert.ok(offlineCall, "should publish offline status");
     });
   });
+
+  describe("feed health (last_fix / feed_live)", () => {
+    // Fabricated student and bus.
+    const student = {
+      uniqueId: "900001",
+      firstName: "Test",
+      lastName: "Student",
+      currentRun: { runId: 1, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false },
+      todaysRuns: [],
+    };
+    const fix = (overrides = {}) => ({
+      assetUniqueId: "BUS 900", latitude: 41.5, longitude: -72.0,
+      heading: 90, speed: 20, logTime: "2026-01-05T13:00:00Z", ...overrides,
+    });
+    const topicCalls = (topic) => publishCalls.filter((c) => c[0] === topic);
+
+    it("publishes diagnostic discovery for last_fix (timestamp) and feed_live (connectivity)", () => {
+      bridge.publishStudent(student);
+      const lastFix = JSON.parse(topicCalls("homeassistant/sensor/myride_student_900001_last_fix/config")[0][1]);
+      assert.equal(lastFix.device_class, "timestamp");
+      assert.equal(lastFix.entity_category, "diagnostic");
+      assert.equal(lastFix.state_topic, "myride/student/900001/last_fix");
+      const live = JSON.parse(topicCalls("homeassistant/binary_sensor/myride_student_900001_feed_live/config")[0][1]);
+      assert.equal(live.device_class, "connectivity");
+      assert.equal(live.entity_category, "diagnostic");
+      assert.equal(live.state_topic, "myride/student/900001/feed_live");
+    });
+
+    it("publishes the fix's GPS time and feed_live ON (retained) on each fix", () => {
+      bridge.publishStudent(student);
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(student, fix());
+      const [lastFix] = topicCalls("myride/student/900001/last_fix");
+      assert.equal(lastFix[1], "2026-01-05T13:00:00.000Z");
+      assert.equal(lastFix[2].retain, true);
+      const [live] = topicCalls("myride/student/900001/feed_live");
+      assert.equal(live[1], "ON");
+      assert.equal(live[2].retain, true);
+    });
+
+    it("skips last_fix for an unparseable logTime", () => {
+      bridge.publishStudent(student);
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(student, fix({ logTime: "garbage" }));
+      assert.equal(topicCalls("myride/student/900001/last_fix").length, 0);
+    });
+
+    it("publishes feed_live only on change", () => {
+      bridge.publishStudent(student);
+      publishCalls.length = 0;
+      bridge.publishStudentLocation(student, fix());
+      bridge.publishStudentLocation(student, fix({ logTime: "2026-01-05T13:00:30Z" }));
+      assert.equal(topicCalls("myride/student/900001/feed_live").length, 1);
+      bridge.publishFeedLive(student, false);
+      bridge.publishFeedLive(student, false);
+      assert.deepEqual(topicCalls("myride/student/900001/feed_live").map((c) => c[1]), ["ON", "OFF"]);
+      bridge.publishStudentLocation(student, fix({ logTime: "2026-01-05T13:05:00Z" }));
+      assert.deepEqual(topicCalls("myride/student/900001/feed_live").map((c) => c[1]), ["ON", "OFF", "ON"]);
+    });
+
+    it("publishFeedLive is a no-op before discovery", () => {
+      bridge.publishFeedLive(student, false);
+      assert.equal(topicCalls("myride/student/900001/feed_live").length, 0);
+    });
+  });
 });

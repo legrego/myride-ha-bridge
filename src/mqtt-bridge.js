@@ -170,6 +170,8 @@ class MqttBridge {
     // failures (off-route connector stretches / wrong-pass) before giving up. Reset
     // whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
+    // studentId → last published feed_live state (publish on change only).
+    this.feedLiveByStudent = new Map();
     // studentId → bool: whether the last fix was tracked in route mode (a trusted
     // snap, held or accepted). Drives the route_snap_ok diagnostic sensor and the
     // one-line "route mode acquired" log on each (re)acquisition.
@@ -402,6 +404,8 @@ class MqttBridge {
     const delayTopic = `${this.topicPrefix}/student/${studentId}/delay`;
     const predictedArrivalTopic = `${this.topicPrefix}/student/${studentId}/predicted_arrival`;
     const routeSnapOkTopic = `${this.topicPrefix}/student/${studentId}/route_snap_ok`;
+    const lastFixTopic = `${this.topicPrefix}/student/${studentId}/last_fix`;
+    const feedLiveTopic = `${this.topicPrefix}/student/${studentId}/feed_live`;
 
     const availability = {
       topic: `${this.topicPrefix}/bridge/status`,
@@ -707,6 +711,51 @@ class MqttBridge {
         { retain: true }
       );
 
+      // Last Fix — diagnostic. GPS time of the most recent location fix for the
+      // student's bus. The device_tracker has no expiry, so on its own a dead feed
+      // looks like a live bus frozen in place; this makes the fix age first-class in
+      // HA (e.g. `now() - states('sensor…last_fix')`). Retained: it's a fact about
+      // the past, worth replaying.
+      this.client.publish(
+        `homeassistant/sensor/myride_student_${studentId}_last_fix/config`,
+        JSON.stringify({
+          name: "Last Fix",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_last_fix`,
+          state_topic: lastFixTopic,
+          device_class: "timestamp",
+          entity_category: "diagnostic",
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:crosshairs-gps",
+        }),
+        { retain: true }
+      );
+
+      // Feed Live — diagnostic. ON when a fix for the student's bus arrived within
+      // the silence threshold (FEED_SILENCE_MS); the orchestrator's feed watchdog
+      // flips it OFF when fixes stop (see publishFeedLive). A dead bridge is covered
+      // by the availability topic (LWT), so this needs no expire_after.
+      this.client.publish(
+        `homeassistant/binary_sensor/myride_student_${studentId}_feed_live/config`,
+        JSON.stringify({
+          name: "Feed Live",
+          has_entity_name: true,
+          unique_id: `myride_student_${studentId}_feed_live`,
+          state_topic: feedLiveTopic,
+          payload_on: "ON",
+          payload_off: "OFF",
+          device_class: "connectivity",
+          entity_category: "diagnostic",
+          availability,
+          device: deviceConfig,
+          origin: ORIGIN,
+          icon: "mdi:access-point-network",
+        }),
+        { retain: true }
+      );
+
       console.log(`[MQTT] Published HA discovery for student ${displayName}`);
     }
 
@@ -833,6 +882,42 @@ class MqttBridge {
     // logTime feeds the route guard's time-based forward allowance.
     this._publishStopProgress(
       studentId, currentRun.myStop, latitude, longitude, speed, Date.parse(logTime), heading
+    );
+
+    // Feed health: GPS time of this fix, and the feed is live.
+    const fixMs = Date.parse(logTime);
+    if (Number.isFinite(fixMs)) {
+      this.client.publish(
+        `${this.topicPrefix}/student/${studentId}/last_fix`,
+        new Date(fixMs).toISOString(),
+        { retain: true }
+      );
+    }
+    this._publishFeedLive(studentId, true);
+  }
+
+  /**
+   * Publish the student's `feed_live` state (called by the orchestrator's feed
+   * watchdog with `false` when the student's bus has gone silent). No-op before
+   * discovery, and only publishes on change.
+   *
+   * @param {object} student — normalized student
+   * @param {boolean} live
+   */
+  publishFeedLive(student, live) {
+    if (!student || !student.uniqueId) return;
+    const studentId = this._sanitizeId(student.uniqueId);
+    if (!this.discoveredStudents.has(studentId)) return;
+    this._publishFeedLive(studentId, live);
+  }
+
+  _publishFeedLive(studentId, live) {
+    if (this.feedLiveByStudent.get(studentId) === live) return;
+    this.feedLiveByStudent.set(studentId, live);
+    this.client.publish(
+      `${this.topicPrefix}/student/${studentId}/feed_live`,
+      live ? "ON" : "OFF",
+      { retain: true }
     );
   }
 
