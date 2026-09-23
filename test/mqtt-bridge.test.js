@@ -737,22 +737,59 @@ describe("MqttBridge", () => {
         assert.equal(bridge._routeDistanceMeters("b", routeStop, 41.50, -72.0, t0), 3000);
       });
 
-      it("does not promote a recurring wrong-pass snap: holds, gives up, then re-acquires", () => {
+      it("holds a recurring wrong-pass snap within budget, then reseeds once route mode is off", () => {
         // Baseline at the route start (cum 0).
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.50, -72.0, t0), 3000);
-        // A deterministic far-ahead snap (cum 3000) recurs at normal cadence. Each
-        // frame's elapsed is only ~30 s, so it stays rejected — repetition alone
-        // never promotes it (the defect the count-based guard had). For the first
-        // ROUTE_MAX_HELD_FIXES (3) rejections the baseline distance is held (3000)...
+        // A far-ahead snap (cum 3000) recurs at normal cadence. Each frame's elapsed
+        // is only ~30 s, so it stays rejected — for the first ROUTE_MAX_HELD_FIXES (3)
+        // rejections the baseline distance is held (3000)...
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(30)), 3000);
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(60)), 3000);
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(90)), 3000);
         // ...then the hold budget is exhausted and it returns null (route mode off).
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(120)), null);
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(150)), null);
-        // But after a genuine long gap (~140 s, e.g. a SignalR reconnect) the same
-        // advance is time-plausible → adopted as the new baseline.
-        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(290)), 0);
+        // A wrong-pass streak that outlived the hold budget means the *baseline* is the
+        // suspect (every fix is on the route yet inconsistent with it), so the next fix
+        // re-acquires fresh instead of being compared against it (2026-09-23: one bad
+        // acquisition otherwise rejects every correct fix until the bus catches up).
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(150)), 0);
+        assert.equal(bridge.lastRouteCumByStudent.get("s1").wrongPassStreak, 0);
+      });
+
+      it("does not reseed on an off-route streak (the baseline is kept for re-acquisition)", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
+        for (const sec of [30, 60, 90, 120, 150]) {
+          bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(sec));
+        }
+        assert.equal(bridge.lastRouteCumByStudent.get("s1").cum, 1000);
+        assert.equal(bridge.lastRouteCumByStudent.get("s1").wrongPassStreak, 0);
+      });
+
+      it("does not hold across a feed gap: an old baseline is not re-published", () => {
+        // 2026-09-23: no fixes 09:07→09:22; the first fixes after the gap snapped
+        // off-route and — being only failure #1/#2 by count — re-published the
+        // pre-gap position as current. The hold is also bounded by age.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(15 * 60)), null);
+        assert.equal(bridge.routeModeActiveByStudent.get("s1"), false);
+        // Baseline kept (off-route preserves the accept clock), so the bus rejoining
+        // the route further along is re-acquired on the huge elapsed allowance.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.53, -72.0, t(15 * 60 + 15)), 0);
+      });
+
+      it("still holds a short off-route burst at normal cadence (age bound not reached)", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(40)), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(80)), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(120)), 2000);
+        // 4th failure: the count bound ends the hold.
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(160)), null);
+      });
+
+      it("ends the hold on age even while within the count budget", () => {
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0, t0), 2000);
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(60)), 2000); // #1, 60 s
+        assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -71.98, t(121)), null); // #2, 121 s
       });
 
       it("re-acquires after a multi-frame off-route stretch (accept clock preserved)", () => {
@@ -779,6 +816,83 @@ describe("MqttBridge", () => {
         // No nowMs → elapsed treated as 0 → only the 150 m base is allowed, so a
         // +1000 m step is rejected — but held at the baseline distance (3000) within budget.
         assert.equal(bridge._routeDistanceMeters("s1", routeStop, 41.51, -72.0), 3000);
+      });
+
+      describe("self-overlapping route (pass disambiguation)", () => {
+        // The route passes the "overlap" point twice: northbound at V1 (cum 1000),
+        // then — after a loop east and back — westbound at V5 (cum 5000). V5 sits a
+        // hair closer to the overlap fix than V1, so a global nearest-vertex snap
+        // lands on the *second* pass (the 2026-09-23 wrong-pass acquisition).
+        // Hand-set cumulative; stop at the last vertex (cum 7000). All fabricated.
+        const loopPolyline = [
+          [41.50, -72.0],      // V0  cum 0
+          [41.51, -72.0],      // V1  cum 1000  ← pass 1 (northbound)
+          [41.52, -72.0],      // V2  cum 2000
+          [41.52, -71.99],     // V3  cum 3000
+          [41.51, -71.99],     // V4  cum 4000
+          [41.51, -72.00001],  // V5  cum 5000  ← pass 2 (westbound)
+          [41.51, -72.01],     // V6  cum 6000
+          [41.50, -72.01],     // V7  cum 7000  (stop)
+        ];
+        const loopStop = {
+          ...routeStop,
+          lat: 41.50, lng: -72.01,
+          routePolyline: loopPolyline,
+          cumulativeMeters: [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000],
+          cumulativeAtStopMeters: 7000,
+        };
+        const OVERLAP = [41.51, -72.00001];
+
+        it("acquires the pass matching the bus heading (northbound → first pass)", () => {
+          assert.equal(
+            bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t0, 355, 20), 6000
+          );
+        });
+
+        it("acquires the pass matching the bus heading (westbound → second pass)", () => {
+          assert.equal(
+            bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t0, 268, 20), 2000
+          );
+        });
+
+        it("acquires the earliest pass when the heading is unusable (bus stopped)", () => {
+          // Heading 268 would pick pass 2, but at 0 mph it is stale → ignored.
+          assert.equal(
+            bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t0, 268, 0), 6000
+          );
+        });
+
+        it("resolves the overlap against the baseline instead of rejecting it", () => {
+          // Baseline at V0 (cum 0). At the overlap 30 s later with no heading, pass 1
+          // (cum 1000) is inside the wrong-pass window and pass 2 (cum 5000) is not →
+          // pass 1 is taken. The old global-nearest snap picked pass 2 and rejected it.
+          assert.equal(bridge._routeDistanceMeters("s1", loopStop, 41.50, -72.0, t0), 7000);
+          assert.equal(bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t(30)), 6000);
+          assert.equal(bridge.lastRouteCumByStudent.get("s1").failCount, 0);
+        });
+
+        it("recovers from a wrong-pass acquisition by reseeding", () => {
+          // Wrongly acquired on pass 2 (cum 5000) — e.g. a heading that happened to
+          // agree with it. The bus is really on pass 1, northbound: every correct fix
+          // is behind the baseline → wrong-pass, held ×3, then route mode off...
+          assert.equal(bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t0, 268, 20), 2000);
+          for (const sec of [30, 60, 90]) {
+            assert.equal(bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t(sec), 0, 20), 2000);
+          }
+          assert.equal(bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t(120), 0, 20), null);
+          // ...and the next fix reseeds onto the heading-consistent pass 1.
+          assert.equal(bridge._routeDistanceMeters("s1", loopStop, ...OVERLAP, t(150), 0, 20), 6000);
+        });
+
+        it("uses the NewLocation heading/speed when publishing", () => {
+          const s = makeStudent(loopStop);
+          bridge.publishStudent(s);
+          publishCalls.length = 0;
+          bridge.publishStudentLocation(s, at(...OVERLAP, { heading: 268, speed: 20 }));
+          const distTopic = `myride/student/${bridge._sanitizeId(s.uniqueId)}/distance_to_stop`;
+          const dist = publishCalls.find((c) => c[0] === distTopic)[1];
+          assert.equal(dist, "2000");
+        });
       });
     });
 

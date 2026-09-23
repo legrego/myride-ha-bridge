@@ -355,6 +355,110 @@ function nearestVertexCumulative(lat, lng, polyline, cumulative) {
 }
 
 /**
+ * Initial compass bearing (degrees, 0 = north, clockwise) from point 1 to point 2.
+ *
+ * @returns {number|null} bearing in [0, 360), or null for non-finite input
+ */
+function bearingDegrees(lat1, lng1, lat2, lng2) {
+  if (![lat1, lng1, lat2, lng2].every(Number.isFinite)) return null;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lng2 - lng1);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/** Smallest absolute difference between two compass bearings, in [0, 180]. */
+function bearingDiffDegrees(a, b) {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+/**
+ * Snap a point to every **pass** of the route that comes within `maxDistMeters`.
+ *
+ * A run's polyline can revisit the same street (loops, U-turns, out-and-back
+ * spurs), so a single global nearest vertex is ambiguous there: two passes sit a
+ * few meters apart and whichever vertex happens to be marginally closer wins. This
+ * returns one candidate per pass instead, so the caller can pick the right one.
+ *
+ * A "pass" is a maximal run of consecutive vertices within `maxDistMeters` of the
+ * point. Within a pass the candidate is the nearest vertex — or, when `headingDeg`
+ * is given, the nearest vertex whose adjacent segment's travel bearing is within
+ * `headingToleranceDeg` of it (so a U-turn, where the outbound and return legs form
+ * one contiguous pass, still resolves to the leg the bus is on). The polyline is in
+ * travel order, so segment bearing is the direction a bus on that pass is driving.
+ *
+ * @param {number} lat
+ * @param {number} lng
+ * @param {Array<[number, number]>} polyline
+ * @param {number[]} cumulative — from cumulativeMetersAlong(polyline)
+ * @param {number} maxDistMeters — trust radius for a vertex to count as "on" a pass
+ * @param {object} [opts]
+ * @param {number|null} [opts.headingDeg] — bus heading; omit/null when unusable
+ *   (e.g. a stopped bus reports a stale heading)
+ * @param {number} [opts.headingToleranceDeg=60]
+ * @returns {{candidates: Array<{cumulativeMeters:number, distMeters:number, headingOk:boolean|null}>,
+ *   nearestDistMeters: number}|null} — candidates in travel order (ascending cum);
+ *   `headingOk` is null when no heading was given. `nearestDistMeters` is the global
+ *   nearest vertex distance (for off-route diagnostics when there are no candidates).
+ *   null for empty/invalid input.
+ */
+function routePassCandidates(lat, lng, polyline, cumulative, maxDistMeters, opts = {}) {
+  if (!Array.isArray(polyline) || polyline.length === 0) return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const heading = Number.isFinite(opts.headingDeg) ? opts.headingDeg : null;
+  const tolerance = Number.isFinite(opts.headingToleranceDeg) ? opts.headingToleranceDeg : 60;
+
+  // Travel bearing matches the heading on either segment touching vertex i (a
+  // vertex at a corner belongs to both the leg into it and the leg out of it).
+  const headingMatches = (i) => {
+    for (const [a, b] of [[i - 1, i], [i, i + 1]]) {
+      if (a < 0 || b >= polyline.length) continue;
+      const brg = bearingDegrees(polyline[a][0], polyline[a][1], polyline[b][0], polyline[b][1]);
+      if (brg != null && bearingDiffDegrees(brg, heading) <= tolerance) return true;
+    }
+    return false;
+  };
+
+  const candidates = [];
+  let nearestDist = Infinity;
+  let group = null; // { best, bestMatching } for the pass currently being scanned
+  const closeGroup = () => {
+    if (!group) return;
+    const pick = group.bestMatching || group.best;
+    candidates.push({
+      cumulativeMeters: cumulative[pick.i],
+      distMeters: pick.d,
+      headingOk: heading == null ? null : group.bestMatching != null,
+    });
+    group = null;
+  };
+  for (let i = 0; i < polyline.length; i++) {
+    const d = haversineMeters(lat, lng, polyline[i][0], polyline[i][1]);
+    if (d == null || !Number.isFinite(cumulative[i])) {
+      closeGroup();
+      continue;
+    }
+    if (d < nearestDist) nearestDist = d;
+    if (d > maxDistMeters) {
+      closeGroup();
+      continue;
+    }
+    if (!group) group = { best: null, bestMatching: null };
+    if (!group.best || d < group.best.d) group.best = { i, d };
+    if (heading != null && headingMatches(i) && (!group.bestMatching || d < group.bestMatching.d)) {
+      group.bestMatching = { i, d };
+    }
+  }
+  closeGroup();
+  if (!Number.isFinite(nearestDist)) return null;
+  return { candidates, nearestDistMeters: nearestDist };
+}
+
+/**
  * Attach route geometry to a normalized `myStop` so the publisher can compute
  * road-following (rather than crow-flies) distance to the stop.
  *
@@ -851,6 +955,9 @@ module.exports = {
   scheduledMinutesAt,
   cumulativeMetersAlong,
   nearestVertexCumulative,
+  routePassCandidates,
+  bearingDegrees,
+  bearingDiffDegrees,
   attachRouteGeometry,
   pickMyStop,
   summarizeRunStops,
