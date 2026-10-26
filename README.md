@@ -40,6 +40,8 @@ For a student with ID `1234567` you get:
 | `sensor.myride_student_1234567_last_fix` | Sensor | GPS time of the latest fix for the student's bus (diagnostic timestamp) |
 | `binary_sensor.myride_student_1234567_feed_live` | Binary Sensor | Has a fix arrived in the last 2 minutes? (diagnostic; OFF = tracking lost) |
 | `binary_sensor.myride_bridge_credentials` | Binary Sensor | Credential problem alert (ON = expired) |
+| `binary_sensor.myride_bridge_position_stream` | Binary Sensor | Is MyRide streaming positions for today's bus(es) to the bridge? (diagnostic; OFF = stream silent on a run day, unknown = no runs today; attributes carry connection/reconnect details) |
+| `sensor.myride_bridge_last_frame_received` | Sensor | When the bridge last received any position frame, any bus (diagnostic timestamp, updated at most once a minute) |
 
 > Raw per-bus entities (`device_tracker.myride_bus_*`) are no longer published. On
 > upgrade the bridge clears the old retained discovery configs so those entities
@@ -170,6 +172,10 @@ TZ=America/New_York
 
 # Only track your kid's bus
 BUS_FILTER=BUS 042
+
+# Seconds without a frame for today's bus before the bridge reconnects the
+# position stream (default 300). See "No location updates" below.
+STREAM_SILENCE_SECONDS=300
 ```
 
 > **Note:** `TZ` matters because MyRide reports stop times in the district's
@@ -427,6 +433,17 @@ exponential backoff (1s, 2s, 4s... up to 60s).
 ### No location updates
 Bus GPS only reports during active routes (school days, pickup/dropoff windows).
 Remove `BUS_FILTER` temporarily to see if any district buses are reporting.
+
+MyRide decides which buses a connection receives **when the connection is made**,
+from that day's runs; a connection made on a no-run day (weekend, holiday) receives
+nothing, even after runs return. The bridge handles this itself: it reconnects as
+soon as a roster poll shows a bus it isn't yet watching (`[Stream] reconnect
+reason=runs-changed`), and on a run day it reconnects whenever today's bus has sent
+no frame for `STREAM_SILENCE_SECONDS` (default 300), backing off to one attempt per
+15 minutes while the stream stays silent (`reason=watchdog`). A tracked connection
+receives a repeat of the latest fix about every 5 seconds even while the bus is
+parked, so silence really means "not tracked". `binary_sensor.myride_bridge_position_stream`
+shows the result in Home Assistant, and `GET /status` includes a `stream` section.
 
 ### Token capture script finds nothing
 Make sure you are fully logged in before running the script — the `oidc.user`

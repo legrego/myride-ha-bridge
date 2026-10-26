@@ -39,13 +39,14 @@ try {
 
 const { CognitoAuth } = require("./cognito-auth");
 const { MyRideSignalRClient } = require("./signalr-client");
-const { MqttBridge } = require("./mqtt-bridge");
+const { MqttBridge, truncateJson } = require("./mqtt-bridge");
 const { ApiServer } = require("./api-server");
 const { runSimulation } = require("./simulator");
 const { MyRideApi } = require("./myride-api");
 const { StudentTracker } = require("./student-tracker");
 const { FixOrderGuard } = require("./fix-order-guard");
 const { FeedMonitor, inRunWindow } = require("./feed-monitor");
+const { StreamSupervisor, STREAM_SILENCE_MS } = require("./stream-supervisor");
 const { nowMinutesInTimeZone, formatMinutes } = require("./student-tracker");
 const { version } = require("./version");
 
@@ -70,6 +71,8 @@ const config = {
     approachRadiusMeters: Number(process.env.APPROACH_RADIUS_METERS),
   },
   busFilter: process.env.BUS_FILTER || null,
+  // Parsed loosely; NaN/≤0 falls back to the default (see streamSupervisor below).
+  streamSilenceSeconds: Number(process.env.STREAM_SILENCE_SECONDS),
   timeZone: process.env.TZ || "America/New_York",
   logLevel: process.env.LOG_LEVEL || "info",
   api: {
@@ -232,6 +235,23 @@ const feedMonitor = new FeedMonitor();
 // How often the feed watchdog checks for silent buses.
 const FEED_WATCHDOG_INTERVAL_MS = 30_000;
 let feedWatchdogInterval = null;
+// Connection-level stream supervision: reconnects when MyRide isn't tracking this
+// connection (see stream-supervisor.js).
+const streamSupervisor = new StreamSupervisor({
+  silenceMs:
+    Number.isFinite(config.streamSilenceSeconds) && config.streamSilenceSeconds > 0
+      ? config.streamSilenceSeconds * 1000
+      : STREAM_SILENCE_MS,
+});
+// The one reconnect in progress (supervisor-initiated, `closed` loop or token swap);
+// every other reconnect request is a no-op while it is set.
+let reconnectInFlight = null;
+// Frame accounting for the hourly [Stream] log and the position_stream attributes.
+const STREAM_FRAME_LOG_INTERVAL_MS = 60 * 60 * 1000;
+let lastFrameAnyMs = null; // receipt time of the latest frame from any bus (pre-filter)
+let framesThisHour = { total: 0, watched: 0 };
+let framesLastHour = null; // counts of the last completed hour
+let streamFrameLogInterval = null;
 // Buses whose legacy per-bus HA entities have already been cleared (migration).
 const clearedBuses = new Set();
 
@@ -305,12 +325,9 @@ async function handleNewToken(newRefreshToken) {
     console.log("[Students] Tracker restarted with new credentials.");
   }
 
-  // Restart SignalR if it was stopped
-  if (signalrClient) {
-    try { await signalrClient.stop(); } catch { /* best effort */ }
-    await signalrClient.start();
-    console.log("[MyRide] SignalR reconnected with new credentials.");
-  }
+  // Reconnect SignalR with the new credentials (not awaited: on failure it falls
+  // into the backoff loop, which must not hold up the API response).
+  reconnectSignalR("token");
 
   // Restart periodic refresh if it was cleared
   if (auth && !refreshInterval) {
@@ -336,6 +353,128 @@ function logDropSummary({ busId, count, newestLogTime, lastAcceptedMs }) {
   );
 }
 
+const BACKOFF_RECONNECT_REASONS = new Set(["watchdog", "server-error"]);
+
+/**
+ * The single path for rebuilding the SignalR connection. No-op while the refresh
+ * token is expired, before SignalR exists, or while another reconnect is in flight.
+ *
+ * @param {string} reason — "closed" | "runs-changed" | "watchdog" | "server-error" | "token"
+ * @param {string} [summary] — context appended to the log line
+ * @returns {Promise<void>|null} the in-flight reconnect, or null when skipped
+ */
+function reconnectSignalR(reason, summary = "") {
+  if (refreshTokenExpired || !signalrClient || reconnectInFlight) return null;
+  reconnectInFlight = runReconnect(reason, summary)
+    .catch((err) => console.error(`[Stream] reconnect (${reason}) failed: ${err.message}`))
+    .finally(() => { reconnectInFlight = null; });
+  return reconnectInFlight;
+}
+
+async function runReconnect(reason, summary) {
+  const line = `[Stream] reconnect reason=${reason}${summary ? `: ${summary}` : ""}`;
+  if (BACKOFF_RECONNECT_REASONS.has(reason)) {
+    console.warn(line);
+    streamSupervisor.onReconnectStarted(reason, Date.now());
+  } else {
+    console.log(line);
+  }
+  // A closed socket keeps the original 1 s → 60 s backoff before its first attempt.
+  if (reason === "closed") return reconnectWithBackoff(reason);
+  try {
+    await connectSignalR(reason);
+  } catch (err) {
+    if (err.tokenExpired) {
+      await handleTokenExpired();
+      return;
+    }
+    console.error(`[Stream] reconnect (${reason}) failed: ${err.message}`);
+    await reconnectWithBackoff(reason);
+  }
+}
+
+// Retry with exponential backoff, building a fresh HubConnection each time.
+// A fresh connection avoids the zombie-reconnect problem seen with skipNegotiation.
+async function reconnectWithBackoff(reason) {
+  for (let attempt = 1; ; attempt++) {
+    const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000);
+    console.log(`[MyRide] Reconnect attempt ${attempt} in ${delay / 1000}s...`);
+    await new Promise((r) => setTimeout(r, delay));
+
+    if (refreshTokenExpired) return;
+    try {
+      await connectSignalR(reason);
+      return;
+    } catch (err) {
+      if (err.tokenExpired) {
+        await handleTokenExpired();
+        return;
+      }
+      console.error(`[MyRide] Reconnect attempt ${attempt} failed: ${err.message}`);
+    }
+  }
+}
+
+// Build a fresh, negotiated connection and record it with the supervisor.
+async function connectSignalR(reason) {
+  await ensureFreshToken();
+  streamSupervisor.onConnectStarted(Date.now());
+  await signalrClient.restart(); // builds a brand-new HubConnection
+  onStreamConnected(reason);
+}
+
+function onStreamConnected(reason) {
+  const nowMs = Date.now();
+  streamSupervisor.onConnected(nowMs, reason);
+  console.log(
+    `[Stream] connected reason=${reason} connectionId=${signalrClient.connectionId || "?"} ` +
+    `watched=${watchedLabel(streamSupervisor.status(nowMs).watchedBuses)}`
+  );
+  publishStreamHealth(nowMs);
+}
+
+// Log context for a runs-changed decision: the set change from a roster poll, or a
+// change retried because it arrived during an earlier connect.
+function describeRunsChanged(detail) {
+  return detail.previous
+    ? `watched ${watchedLabel(detail.previous)} → ${watchedLabel(detail.next)}`
+    : `roster change at ${new Date(detail.changedAtMs).toISOString()} not covered by the current connection; ` +
+      `watched ${watchedLabel(detail.next)}`;
+}
+
+function watchedLabel(buses) {
+  return buses && buses.length ? buses.join(", ") : "(none)";
+}
+
+function streamStatus(nowMs) {
+  return {
+    ...streamSupervisor.status(nowMs),
+    connectionId: signalrClient ? signalrClient.connectionId : null,
+    framesLastHour,
+  };
+}
+
+function publishStreamHealth(nowMs) {
+  if (mqttBridge) mqttBridge.publishStreamHealth(streamStatus(nowMs), lastFrameAnyMs, nowMs);
+}
+
+/**
+ * Describe a watchdog decision for the log, with the run that should be driving.
+ */
+function describeWatchdog(detail, nowMs) {
+  const nowMinutes = nowMinutesInTimeZone(new Date(nowMs), config.timeZone);
+  const runs = detail.buses.flatMap((bus) => (busToStudents.get(bus) || []).map((st) => st.currentRun));
+  const run = runs.find((r) => inRunWindow(r, nowMinutes));
+  const runText = run
+    ? `run ${run.runId} window ${formatMinutes(run.windowStart)}–${formatMinutes(run.windowEnd)}`
+    : "run - window -";
+  return (
+    `no frame for ${detail.buses.join(", ")} in ${Math.round(detail.silentMs / 1000)}s on a run day ` +
+    `(${runText}); reconnecting (attempt ${detail.attempt}, next allowed in ` +
+    `${Math.round(detail.nextAllowedInMs / 60000)} min)`
+  );
+}
+
 function getBridgeStatus() {
   const now = Math.floor(Date.now() / 1000);
   return {
@@ -347,6 +486,7 @@ function getBridgeStatus() {
     signalrConnected: signalrClient ? signalrClient.state === "Connected" : false,
     mqttConnected: mqttBridge ? mqttBridge.client.connected : false,
     buses: Array.from(busStates.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    stream: streamStatus(Date.now()),
   };
 }
 
@@ -384,6 +524,7 @@ async function main() {
   // Publish credential status sensor (problem = OFF means credentials are OK)
   mqttBridge.publishCredentialStatusDiscovery();
   mqttBridge.publishCredentialStatus(false);
+  mqttBridge.publishStreamHealthDiscovery();
 
   // Step 3: Start student tracker (drives dynamic bus filter)
   const myRideApi = new MyRideApi({
@@ -406,6 +547,13 @@ async function main() {
         busToStudents.set(activeBus, list);
       }
     }
+    // The buses this connection should be receiving. MyRide only decides that when
+    // a connection is made, so a newly needed bus (runs appearing after a no-run
+    // day, a substitute) means reconnecting. Every update, not only on `change`, so
+    // the BUS_FILTER override is covered too.
+    const watched = [...busToStudents.keys()].filter((bus) => !config.busFilter || bus === config.busFilter);
+    const decision = streamSupervisor.setWatchedBuses(watched, Date.now());
+    if (decision) reconnectSignalR(decision.reason, describeRunsChanged(decision.detail));
     // One-time migration: remove legacy per-bus entities from HA
     for (const bus of snapshot.activeBuses) {
       if (!clearedBuses.has(bus)) {
@@ -441,6 +589,35 @@ async function main() {
 
   // Wire SignalR location events → MQTT
   let locationCount = 0;
+  // Every frame, before the bus filter (and before the order guard in the location
+  // handler): last_frame_received, hourly counts and stream liveness. Liveness
+  // counts every frame for a watched bus, including the repeats the order guard
+  // drops — those ~5 s repeats are how a tracked connection shows it is tracked
+  // while the bus is parked.
+  signalrClient.on("frame", (data) => {
+    const nowMs = Date.now();
+    lastFrameAnyMs = nowMs;
+    framesThisHour.total++;
+    if (streamSupervisor.onFrame(data.assetUniqueId, nowMs)) framesThisHour.watched++;
+  });
+
+  signalrClient.on("serverError", ({ method, args }) => {
+    const nowMs = Date.now();
+    console.warn(
+      `[Stream] server called ${method}(${truncateJson(args)}) ` +
+      `watched=${watchedLabel(streamSupervisor.status(nowMs).watchedBuses)}`
+    );
+    const decision = streamSupervisor.onServerError(method, args, nowMs);
+    if (decision) {
+      reconnectSignalR(
+        decision.reason,
+        `server called ${method} (attempt ${decision.detail.attempt}, next allowed in ` +
+        `${Math.round(decision.detail.nextAllowedInMs / 60000)} min)`
+      );
+    }
+    publishStreamHealth(nowMs);
+  });
+
   signalrClient.on("location", (data) => {
     // Monotonic guard: drop replayed/out-of-order fixes so a superseded location
     // can't rewind the bus's route position (which bounces distance/eta/stops_away
@@ -494,34 +671,25 @@ async function main() {
     }
   });
 
-  signalrClient.on("closed", async (error) => {
+  signalrClient.on("closed", () => {
     if (refreshTokenExpired) return; // already handled, don't restart
     console.warn("[MyRide] Connection lost, reconnecting...");
-
-    // Retry with exponential backoff, building a fresh HubConnection each time.
-    // A fresh connection avoids the zombie-reconnect problem seen with skipNegotiation.
-    for (let attempt = 1; ; attempt++) {
-      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000);
-      console.log(`[MyRide] Reconnect attempt ${attempt} in ${delay / 1000}s...`);
-      await new Promise((r) => setTimeout(r, delay));
-
-      if (refreshTokenExpired) return;
-      try {
-        await ensureFreshToken();
-        await signalrClient.start(); // builds a brand-new HubConnection
-        console.log("[MyRide] Reconnected successfully.");
-        return;
-      } catch (err) {
-        if (err.tokenExpired) {
-          await handleTokenExpired();
-          return;
-        }
-        console.error(`[MyRide] Reconnect attempt ${attempt} failed: ${err.message}`);
-      }
-    }
+    reconnectSignalR("closed");
   });
 
-  await signalrClient.start();
+  // The startup connect is part of the single-flight reconnect coordination, so
+  // nothing (e.g. a server call dispatched with the handshake) can restart it
+  // mid-start and make this start() reject.
+  reconnectInFlight = (async () => {
+    streamSupervisor.onConnectStarted(Date.now());
+    await signalrClient.start();
+    onStreamConnected("startup");
+  })();
+  try {
+    await reconnectInFlight;
+  } finally {
+    reconnectInFlight = null;
+  }
 
   // Feed watchdog: flip feed_live OFF for students whose bus has gone silent, and
   // warn once per silence episode when it happens during the run's window (when the
@@ -545,7 +713,30 @@ async function main() {
       }
     }
     for (const summary of feedMonitor.flushDrops(nowMs)) logDropSummary(summary);
+
+    // Stream watchdog: a run-day connection with no watched-bus frame for the
+    // silence window isn't being tracked by MyRide — reconnect (backed off). Also
+    // retries a roster change the current connection was made too early to cover.
+    const decision = streamSupervisor.check(nowMs);
+    if (decision && !refreshTokenExpired && !reconnectInFlight) {
+      reconnectSignalR(
+        decision.reason,
+        decision.reason === "watchdog" ? describeWatchdog(decision.detail, nowMs) : describeRunsChanged(decision.detail)
+      );
+    }
+    publishStreamHealth(nowMs);
   }, FEED_WATCHDOG_INTERVAL_MS);
+
+  streamFrameLogInterval = setInterval(() => {
+    const { connectedSinceMs } = streamSupervisor.status(Date.now());
+    const ageH = connectedSinceMs != null ? ((Date.now() - connectedSinceMs) / 3_600_000).toFixed(1) : "-";
+    console.log(
+      `[Stream] frames last hour: total=${framesThisHour.total} watched=${framesThisHour.watched} ` +
+      `connectionAge=${ageH}h`
+    );
+    framesLastHour = framesThisHour;
+    framesThisHour = { total: 0, watched: 0 };
+  }, STREAM_FRAME_LOG_INTERVAL_MS);
 
   // Step 5: Periodic token refresh (every 50 minutes)
   refreshInterval = auth
@@ -567,6 +758,7 @@ async function main() {
     console.log(`\n[Bridge] ${signal} received, shutting down...`);
     if (refreshInterval) clearInterval(refreshInterval);
     if (feedWatchdogInterval) clearInterval(feedWatchdogInterval);
+    if (streamFrameLogInterval) clearInterval(streamFrameLogInterval);
     if (studentTracker) studentTracker.stop();
     await signalrClient.stop();
     await apiServer.stop();

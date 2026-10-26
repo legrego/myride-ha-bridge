@@ -65,8 +65,10 @@ class MyRideSignalRClient extends EventEmitter {
    * @param {string|function} [opts.busFilter] — optional filter: string ID for exact match,
    *   or predicate function (assetUniqueId) => boolean. Null/undefined allows all buses.
    * @param {string} [opts.logLevel] — "debug" | "info" | "warn" | "error"
+   * @param {function} [opts.hubConnectionFactory] — (url, options, logLevel) => HubConnection;
+   *   test seam, defaults to the HubConnectionBuilder chain
    */
-  constructor({ tenantId, accessTokenFactory, busFilter, logLevel = "info" }) {
+  constructor({ tenantId, accessTokenFactory, busFilter, logLevel = "info", hubConnectionFactory }) {
     super();
     this.tenantId = tenantId;
     this.accessTokenFactory = accessTokenFactory;
@@ -83,6 +85,11 @@ class MyRideSignalRClient extends EventEmitter {
     }
     this.connection = null;
     this.logLevel = this._parseLogLevel(logLevel);
+    this._hubConnectionFactory = hubConnectionFactory || defaultHubConnectionFactory;
+    // Connections closed on purpose by stop()/restart(). Their onclose — which may
+    // fire after stop() resolves — must not emit "closed", or index.js would start a
+    // reconnect loop (seen on every SIGTERM before this existed).
+    this._intentionallyClosed = new WeakSet();
   }
 
   _parseLogLevel(level) {
@@ -130,25 +137,30 @@ class MyRideSignalRClient extends EventEmitter {
   async start() {
     const hubUrl = `${HUB_BASE_URL}?x-tenant-id=${this.tenantId}`;
 
-    this.connection = new signalR.HubConnectionBuilder()
-      .withUrl(hubUrl, this._connectionOptions())
-      // No withAutomaticReconnect() — it reuses the existing HubConnection object,
-      // which can produce a zombie connection that appears Connected but receives no
-      // events. Instead, we let onclose fire immediately and rely on the rebuild loop
-      // in index.js, which creates a fresh HubConnection (and re-negotiates) each time.
-      .configureLogging(this.logLevel)
-      .build();
+    const conn = this._hubConnectionFactory(hubUrl, this._connectionOptions(), this.logLevel);
+    this.connection = conn;
 
-    // Handle the main location event
-    this.connection.on("NewLocation", (locationData) => {
+    // Handle the main location event. "frame" is every NewLocation (pre-filter, for
+    // stream-health accounting); "location" only the buses the filter allows.
+    conn.on("NewLocation", (locationData) => {
+      this.emit("frame", locationData);
       if (this.busFilter && !this.busFilter(locationData.assetUniqueId)) {
         return;
       }
       this.emit("location", locationData);
     });
 
-    // Connection lifecycle events
-    this.connection.onclose((error) => {
+    // MyRide calls these on a connection it won't track (e.g. one made on a day with
+    // no runs). Without handlers the library only logs "No client method with the
+    // name 'errorcode' found" and the payload is lost.
+    for (const method of ["errorcode", "error"]) {
+      conn.on(method, (...args) => this.emit("serverError", { method, args }));
+    }
+
+    // Connection lifecycle events. Only a close of the *current* connection that we
+    // didn't initiate is reported; a superseded or intentionally stopped one isn't.
+    conn.onclose((error) => {
+      if (conn !== this.connection || this._intentionallyClosed.has(conn)) return;
       console.log(`[MyRide] Connection closed.`, error?.message || "");
       this.emit("closed", error);
     });
@@ -159,22 +171,60 @@ class MyRideSignalRClient extends EventEmitter {
       console.log(`[MyRide]   Bus filter: ${this._busFilterLabel}`);
     }
 
-    await this.connection.start();
+    await conn.start();
     console.log(
-      `[MyRide] Connected! State: ${this.connection.state}`
+      `[MyRide] Connected! State: ${conn.state}`
     );
   }
 
+  /**
+   * Stop the current connection without emitting "closed".
+   */
   async stop() {
-    if (this.connection) {
-      await this.connection.stop();
+    const conn = this.connection;
+    if (conn) {
+      this._intentionallyClosed.add(conn);
+      await conn.stop();
       console.log("[MyRide] Disconnected.");
     }
+  }
+
+  /**
+   * Replace the current connection with a freshly negotiated one (MyRide decides
+   * which buses a connection receives when it is made). Errors stopping the old
+   * connection are ignored; errors starting the new one propagate.
+   */
+  async restart() {
+    try {
+      await this.stop();
+    } catch (err) {
+      console.warn(`[MyRide] Error stopping connection before restart: ${err.message}`);
+    }
+    await this.start();
+  }
+
+  /** The current connection's id (set by the library after start), or null. */
+  get connectionId() {
+    return this.connection?.connectionId || null;
   }
 
   get state() {
     return this.connection?.state || "Disconnected";
   }
+}
+
+/**
+ * Build a real HubConnection.
+ */
+function defaultHubConnectionFactory(url, options, logLevel) {
+  return new signalR.HubConnectionBuilder()
+    .withUrl(url, options)
+    // No withAutomaticReconnect() — it reuses the existing HubConnection object,
+    // which can produce a zombie connection that appears Connected but receives no
+    // events. Instead, we let onclose fire immediately and rely on the rebuild loop
+    // in index.js, which creates a fresh HubConnection (and re-negotiates) each time.
+    .configureLogging(logLevel)
+    .build();
 }
 
 module.exports = { MyRideSignalRClient };
