@@ -6,8 +6,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM node:22-alpine
+# ── Base runtime stage (shared by the add-on and standalone images) ──────────
+FROM node:22-alpine AS base
 
 WORKDIR /app
 
@@ -41,9 +41,17 @@ ENV NODE_ENV=production \
     GIT_COMMIT=$GIT_COMMIT \
     BUILD_TIME=$BUILD_TIME
 
-USER bridge
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD wget -qO- http://localhost:${API_PORT}/status || exit 1
 
 CMD ["node", "src/index.js"]
+
+# ── Home Assistant add-on (build with --target addon) ─────────────────────────
+# Runs as root: the Supervisor bind-mounts /data owned by root, and the bridge
+# must write the refresh token there.
+FROM base AS addon
+
+# ── Standalone runtime (default target — keep it last) ───────────────────────
+FROM base AS runtime
+
+USER bridge

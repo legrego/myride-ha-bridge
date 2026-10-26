@@ -206,6 +206,17 @@ Expected output:
 
 ### 5. Run as a Service
 
+**Home Assistant add-on** (HA OS / Supervised, amd64 or aarch64): in Home Assistant,
+go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add
+`https://github.com/legrego/myride-ha-bridge`. Then install **MyRide Bus Bridge**,
+set `tenant_id` and `refresh_token`, and start it. The add-on uses the Mosquitto
+add-on's broker automatically, so it needs no MQTT settings. The status page is at
+`http://homeassistant.local:8099`, and logs appear in the add-on's **Log** tab with
+per-line timestamps. If you're moving from a Docker/Portainer deployment, stop that
+container first, because two bridges would publish to the same topics. Entity IDs
+stay the same. HA only offers an add-on update when `myride_bridge/config.yaml`'s
+`version` changes, so bump it (together with `package.json`) to ship a release.
+
 **systemd** — create `/etc/systemd/system/myride-bridge.service`:
 
 ```ini

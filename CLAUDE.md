@@ -13,6 +13,8 @@ npm install          # Install dependencies
 npm start            # Run the bridge (node src/index.js)
 npm run simulate     # Run in simulation mode (SIMULATE=true node src/index.js)
 npm test             # Run the node:test suite (test/*.test.js)
+docker build .                  # Standalone (Portainer) image, non-root
+docker build --target addon .   # Home Assistant add-on image, root
 ```
 
 ## Configuration
@@ -44,6 +46,8 @@ src/simulator.js  —  activated via SIMULATE=true; emits fake NewLocation event
                       from four fake buses every 5s; ApiServer runs normally so
                       the UI and /status are accessible for local testing
 ```
+
+**Home Assistant add-on:** The repo is also an HA add-on repository (`repository.yaml` + `myride_bridge/config.yaml`). The add-on uses the prebuilt multi-arch image `ghcr.io/legrego/myride-ha-bridge-addon:<version>`, which is the Dockerfile's `addon` target. That target runs as root because the Supervisor's `/data` is root-owned. The default `runtime` target (Portainer) stays non-root and must remain the **last** stage. CI tags the add-on image with `config.yaml`'s `version`, and a test keeps that equal to `package.json`'s, so bump both to release. When `SUPERVISOR_TOKEN` is set, `src/addon-config.js` maps `/data/options.json` onto the usual env vars (options override env, because the only env values there are image defaults like `LOG_LEVEL`). It also prefixes every console line with an ISO timestamp and, if `MQTT_BROKER` is unset, takes the broker from the Supervisor's `/services/mqtt`. The persisted `TOKEN_FILE` still beats the `refresh_token` option, which only bootstraps the first start. **Reading logs:** with the Home Assistant MCP, find the slug with `ha_get_app(source="installed")` (`<repo-hash>_myride_bridge`), then call `ha_get_logs(source="supervisor", slug=…)`.
 
 **Simulation Mode:** Set `SIMULATE=true` (or `npm run simulate`) to run without a
 real MyRide account. Four fake buses do a random walk around a New York area suburb.

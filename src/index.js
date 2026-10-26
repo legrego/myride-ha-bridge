@@ -37,6 +37,16 @@ try {
   // .env loading is optional
 }
 
+// ─── Home Assistant add-on mode ──────────────────────────────────
+// Under the Supervisor, options arrive in /data/options.json and stdout is the
+// add-on log (no per-line timestamps), so map options → env and stamp lines.
+const { applyAddonOptions, fetchMqttService, installLogTimestamps } = require("./addon-config");
+const isAddon = Boolean(process.env.SUPERVISOR_TOKEN);
+if (isAddon) {
+  installLogTimestamps(console);
+  applyAddonOptions();
+}
+
 const { CognitoAuth } = require("./cognito-auth");
 const { MyRideSignalRClient } = require("./signalr-client");
 const { MqttBridge } = require("./mqtt-bridge");
@@ -370,7 +380,16 @@ async function main() {
   // Step 1: Get an initial access token
   await ensureFreshToken();
 
-  // Step 2: Set up MQTT bridge
+  // Step 2: Set up MQTT bridge (as an add-on, default to the Supervisor's broker)
+  if (isAddon && !config.mqtt.broker) {
+    const service = await fetchMqttService();
+    if (service) {
+      Object.assign(config.mqtt, service);
+      console.log(`[MQTT] Using Supervisor-provided broker ${service.broker}:${service.port}`);
+    } else {
+      console.warn("[MQTT] No broker configured and the Supervisor offered none");
+    }
+  }
   mqttBridge = new MqttBridge({
     broker: config.mqtt.broker,
     port: config.mqtt.port,
