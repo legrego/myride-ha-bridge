@@ -60,6 +60,7 @@ async function fetchMqttService({ token = process.env.SUPERVISOR_TOKEN, fetchImp
   try {
     const res = await fetchImpl(SUPERVISOR_MQTT_URL, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;
     const body = await res.json();
@@ -73,6 +74,30 @@ async function fetchMqttService({ token = process.env.SUPERVISOR_TOKEN, fetchImp
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Retry fetchMqttService with exponential backoff (1s → 60s cap, like the
+ * SignalR reconnect) until the Supervisor offers a broker, so a transient
+ * Supervisor hiccup at boot doesn't crash the add-on.
+ * @returns {Promise<{broker, port, username, password}|null>} null only when
+ *   not running under the Supervisor
+ */
+async function waitForMqttService({
+  token = process.env.SUPERVISOR_TOKEN,
+  fetchImpl = fetch,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  initialDelayMs = 1000,
+  maxDelayMs = 60000,
+  log = console.warn,
+} = {}) {
+  if (!token) return null;
+  for (let delay = initialDelayMs; ; delay = Math.min(delay * 2, maxDelayMs)) {
+    const service = await fetchMqttService({ token, fetchImpl });
+    if (service) return service;
+    log(`[MQTT] Supervisor MQTT service unavailable, retrying in ${Math.round(delay / 1000)}s`);
+    await sleep(delay);
   }
 }
 
@@ -91,6 +116,7 @@ function installLogTimestamps(target = console, now = () => new Date()) {
 module.exports = {
   applyAddonOptions,
   fetchMqttService,
+  waitForMqttService,
   installLogTimestamps,
   OPTIONS_PATH,
   OPTION_ENV_MAP,

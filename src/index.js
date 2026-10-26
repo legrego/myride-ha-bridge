@@ -40,7 +40,7 @@ try {
 // ─── Home Assistant add-on mode ──────────────────────────────────
 // Under the Supervisor, options arrive in /data/options.json and stdout is the
 // add-on log (no per-line timestamps), so map options → env and stamp lines.
-const { applyAddonOptions, fetchMqttService, installLogTimestamps } = require("./addon-config");
+const { applyAddonOptions, waitForMqttService, installLogTimestamps } = require("./addon-config");
 const isAddon = Boolean(process.env.SUPERVISOR_TOKEN);
 if (isAddon) {
   installLogTimestamps(console);
@@ -382,13 +382,9 @@ async function main() {
 
   // Step 2: Set up MQTT bridge (as an add-on, default to the Supervisor's broker)
   if (isAddon && !config.mqtt.broker) {
-    const service = await fetchMqttService();
-    if (service) {
-      Object.assign(config.mqtt, service);
-      console.log(`[MQTT] Using Supervisor-provided broker ${service.broker}:${service.port}`);
-    } else {
-      console.warn("[MQTT] No broker configured and the Supervisor offered none");
-    }
+    const service = await waitForMqttService();
+    Object.assign(config.mqtt, service);
+    console.log(`[MQTT] Using Supervisor-provided broker ${service.broker}:${service.port}`);
   }
   mqttBridge = new MqttBridge({
     broker: config.mqtt.broker,

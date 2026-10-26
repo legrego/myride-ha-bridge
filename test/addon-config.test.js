@@ -6,6 +6,7 @@ const path = require("path");
 const {
   applyAddonOptions,
   fetchMqttService,
+  waitForMqttService,
   installLogTimestamps,
 } = require("../src/addon-config");
 
@@ -68,6 +69,7 @@ describe("fetchMqttService", () => {
     let seen;
     const fetchImpl = async (url, opts) => {
       seen = { url, auth: opts.headers.Authorization };
+      assert.ok(opts.signal instanceof AbortSignal, "request has a timeout signal");
       return {
         ok: true,
         json: async () => ({
@@ -99,6 +101,55 @@ describe("fetchMqttService", () => {
       await fetchMqttService({ token: "tok", fetchImpl: async () => ({ ok: true, json: async () => ({ data: {} }) }) }),
       null
     );
+  });
+
+  it("returns null when the request times out", async () => {
+    const fetchImpl = async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+    assert.equal(await fetchMqttService({ token: "tok", fetchImpl }), null);
+  });
+});
+
+describe("waitForMqttService", () => {
+  const ok = {
+    ok: true,
+    json: async () => ({ data: { host: "core-mosquitto", port: 1883, username: "u", password: "p" } }),
+  };
+
+  it("retries with backoff until the Supervisor offers a broker", async () => {
+    let calls = 0;
+    const fetchImpl = async () => (++calls <= 2 ? { ok: false } : ok);
+    const delays = [];
+    const logs = [];
+    const svc = await waitForMqttService({
+      token: "tok",
+      fetchImpl,
+      sleep: async (ms) => delays.push(ms),
+      log: (msg) => logs.push(msg),
+    });
+    assert.equal(svc.broker, "core-mosquitto");
+    assert.deepEqual(delays, [1000, 2000]);
+    assert.equal(logs.length, 2);
+    assert.match(logs[0], /retrying in 1s/);
+  });
+
+  it("caps the backoff at maxDelayMs", async () => {
+    let calls = 0;
+    const fetchImpl = async () => (++calls <= 8 ? { ok: false } : ok);
+    const delays = [];
+    await waitForMqttService({
+      token: "tok",
+      fetchImpl,
+      sleep: async (ms) => delays.push(ms),
+      log: () => {},
+    });
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]);
+  });
+
+  it("returns null without a Supervisor token", async () => {
+    const fetchImpl = async () => assert.fail("should not fetch");
+    assert.equal(await waitForMqttService({ token: undefined, fetchImpl }), null);
   });
 });
 
