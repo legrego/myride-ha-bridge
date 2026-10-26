@@ -13,9 +13,12 @@ the same student-centric entities as the standalone Docker deployment.
 3. On the **Configuration** tab, fill in the tenant ID and refresh token, then
    start the add-on.
 
-The add-on won't start until the tenant ID is set. The refresh token is only used
-on the first start. After that the bridge keeps its own copy, so when it expires,
-paste a new one into the status page instead of the options (no restart needed).
+The add-on won't start until the tenant ID is set. Leave the refresh token in the
+options. The bridge reads it at every start and doesn't save a copy of it.
+
+When the token expires, paste a new one on the status page (no restart needed).
+The bridge saves that token in its own storage and uses it from then on, ahead of
+the option, so later changes to the `refresh_token` option have no effect.
 
 > If you're moving from a Portainer/Docker deployment, stop that container
 > first. Two bridges would publish to the same MQTT topics. Entity IDs stay the
@@ -33,7 +36,7 @@ so it's behind your Home Assistant login and isn't exposed on your network.
 | Option | Description |
 |--------|-------------|
 | `tenant_id` | District UUID from `capture-tokens.js` (required) |
-| `refresh_token` | Cognito refresh token, used to bootstrap the first start |
+| `refresh_token` | Cognito refresh token. Keep it set; a token pasted on the status page replaces it |
 | `timezone` | District IANA time zone, used for AM/PM run selection. Leave empty to use your Home Assistant time zone |
 | `approach_radius_meters` | Distance at which "Approaching Stop" turns on (default 500) |
 | `bus_filter` | Optional: track only this bus (for example `BUS 042`) |

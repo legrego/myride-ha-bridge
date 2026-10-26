@@ -104,12 +104,16 @@ async function waitForMqttService({
 /**
  * Prefix every console line with an ISO timestamp. The Supervisor's add-on log
  * text carries no per-line time, and feed-gap/route debugging depends on it.
- * Arguments are formatted first so printf-style specifiers keep working.
+ * Arguments are formatted first so printf-style specifiers keep working, and
+ * every line of a multiline message gets the same timestamp.
  */
 function installLogTimestamps(target = console, now = () => new Date()) {
   for (const method of ["log", "info", "warn", "error", "debug"]) {
     const orig = target[method].bind(target);
-    target[method] = (...args) => orig(`${now().toISOString()} ${util.format(...args)}`);
+    target[method] = (...args) => {
+      const ts = now().toISOString();
+      orig(util.format(...args).split("\n").map((line) => `${ts} ${line}`).join("\n"));
+    };
   }
 }
 

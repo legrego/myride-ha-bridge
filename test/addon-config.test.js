@@ -166,6 +166,18 @@ describe("installLogTimestamps", () => {
       "warn:2026-10-26T12:00:00.000Z [Feed] no fix",
     ]);
   });
+
+  it("timestamps every line of a multiline message", () => {
+    const lines = [];
+    const target = {};
+    for (const m of ["log", "info", "warn", "error", "debug"]) target[m] = (s) => lines.push(s);
+    installLogTimestamps(target, () => new Date("2026-10-26T12:00:00Z"));
+    target.error("[MyRideApi] GET /api/student -> 500\n  body (0b): (empty)");
+    assert.deepEqual(lines, [
+      "2026-10-26T12:00:00.000Z [MyRideApi] GET /api/student -> 500\n" +
+        "2026-10-26T12:00:00.000Z   body (0b): (empty)",
+    ]);
+  });
 });
 
 describe("add-on manifest", () => {
