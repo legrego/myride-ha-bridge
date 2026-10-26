@@ -80,12 +80,34 @@ describe("StreamSupervisor", () => {
       const d = s.check(T0 + 10 * MIN + 2000 + MIN_RECONNECT_GAP_MS);
       assert.equal(d.reason, "runs-changed");
       assert.deepEqual(d.detail.next, ["B"]);
-      assert.equal(d.detail.pendingSinceMs, T0 + 10 * MIN + 1000);
+      assert.equal(d.detail.changedAtMs, T0 + 10 * MIN + 1000);
       // A connection started after the change satisfies it.
       s.onConnectStarted(T0 + 11 * MIN);
       s.onConnected(T0 + 11 * MIN + 1000, "runs-changed");
       s.onFrame("B", T0 + 11 * MIN + 2000);
       assert.equal(s.check(T0 + 13 * MIN), null);
+    });
+
+    it("keeps a bus added during an attempt pending after an earlier addition is covered", () => {
+      const s = connected(["A"]);
+      s.setWatchedBuses(["A", "B"], T0 + 10 * MIN); // B added; its reconnect starts …
+      s.onConnectStarted(T0 + 10 * MIN + 1000);
+      s.setWatchedBuses(["A", "B", "C"], T0 + 10 * MIN + 2000); // … C added mid-attempt (dropped)
+      s.onConnected(T0 + 10 * MIN + 3000, "runs-changed");
+      // The connection covers B but predates C, so C is still pending even though
+      // frames from A and B keep the watchdog satisfied.
+      for (let t = T0 + 10 * MIN + 4000; t < T0 + 12 * MIN; t += 5000) {
+        s.onFrame("A", t);
+        s.onFrame("B", t);
+      }
+      const d = s.check(T0 + 12 * MIN);
+      assert.equal(d.reason, "runs-changed");
+      assert.equal(d.detail.changedAtMs, T0 + 10 * MIN + 2000);
+      // A connection started after C's addition settles it.
+      s.onConnectStarted(T0 + 12 * MIN);
+      s.onConnected(T0 + 12 * MIN + 1000, "runs-changed");
+      s.onFrame("C", T0 + 12 * MIN + 2000);
+      assert.equal(s.check(T0 + 14 * MIN), null);
     });
 
     it("keeps frames from another watched bus from masking a pending change", () => {

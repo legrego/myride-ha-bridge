@@ -83,8 +83,10 @@ class StreamSupervisor {
     // attempt began — a connection only reflects roster changes from before that.
     this._attemptStartedMs = null;
     this._connectionStartedMs = null;
-    // Time of the oldest roster change (watched set gained a bus) not yet covered
-    // by a connection started after it; null when none is pending.
+    // Time of the latest roster change (watched set gained a bus) not yet covered
+    // by a connection started after it; null when none is pending. The latest, not
+    // the oldest: a connection that started between two additions covers only the
+    // first, and must not clear the pending change for the second.
     this._rosterChangeMs = null;
     this._lastWatchedFrameMs = null;
     this._reconnects = 0;
@@ -182,7 +184,7 @@ class StreamSupervisor {
     }
     const added = [...next].filter((b) => !prev.has(b));
     if (added.length === 0) return null;
-    if (this._rosterChangeMs == null) this._rosterChangeMs = nowMs;
+    this._rosterChangeMs = nowMs;
     const pending = this._pendingRunsChanged(nowMs);
     return pending && { ...pending, detail: { ...pending.detail, previous: [...prev], added } };
   }
@@ -196,7 +198,7 @@ class StreamSupervisor {
     return {
       reconnect: true,
       reason: "runs-changed",
-      detail: { next: [...this._watched], pendingSinceMs: this._rosterChangeMs },
+      detail: { next: [...this._watched], changedAtMs: this._rosterChangeMs },
     };
   }
 

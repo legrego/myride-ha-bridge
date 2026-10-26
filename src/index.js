@@ -438,7 +438,7 @@ function onStreamConnected(reason) {
 function describeRunsChanged(detail) {
   return detail.previous
     ? `watched ${watchedLabel(detail.previous)} → ${watchedLabel(detail.next)}`
-    : `roster change at ${new Date(detail.pendingSinceMs).toISOString()} not covered by the current connection; ` +
+    : `roster change at ${new Date(detail.changedAtMs).toISOString()} not covered by the current connection; ` +
       `watched ${watchedLabel(detail.next)}`;
 }
 
