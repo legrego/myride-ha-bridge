@@ -37,6 +37,16 @@ try {
   // .env loading is optional
 }
 
+// ─── Home Assistant add-on mode ──────────────────────────────────
+// Under the Supervisor, options arrive in /data/options.json and stdout is the
+// add-on log (no per-line timestamps), so map options → env and stamp lines.
+const { applyAddonOptions, waitForMqttService, installLogTimestamps } = require("./addon-config");
+const isAddon = Boolean(process.env.SUPERVISOR_TOKEN);
+if (isAddon) {
+  installLogTimestamps(console);
+  applyAddonOptions();
+}
+
 const { CognitoAuth } = require("./cognito-auth");
 const { MyRideSignalRClient } = require("./signalr-client");
 const { MqttBridge, truncateJson } = require("./mqtt-bridge");
@@ -87,6 +97,9 @@ const apiServer = new ApiServer({
   tokenFile: config.api.tokenFile,
   onNewToken: (token) => handleNewToken(token), // wired below
   getStatus: () => getBridgeStatus(),            // wired below
+  // As an add-on the UI is served through ingress: accept only the Supervisor
+  // (ingress proxy + watchdog) and loopback (the image HEALTHCHECK).
+  allowedRemotes: isAddon ? ["172.30.32.2", "127.0.0.1", "::1"] : null,
 });
 
 // Load persisted token (file takes precedence over env var)
@@ -510,7 +523,12 @@ async function main() {
   // Step 1: Get an initial access token
   await ensureFreshToken();
 
-  // Step 2: Set up MQTT bridge
+  // Step 2: Set up MQTT bridge (as an add-on, default to the Supervisor's broker)
+  if (isAddon && !config.mqtt.broker) {
+    const service = await waitForMqttService();
+    Object.assign(config.mqtt, service);
+    console.log(`[MQTT] Using Supervisor-provided broker ${service.broker}:${service.port}`);
+  }
   mqttBridge = new MqttBridge({
     broker: config.mqtt.broker,
     port: config.mqtt.port,

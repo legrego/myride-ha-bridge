@@ -212,6 +212,28 @@ Expected output:
 
 ### 5. Run as a Service
 
+**Home Assistant add-on** (HA OS / Supervised, amd64 or aarch64):
+
+[![Open your Home Assistant instance and show the add app repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Flegrego%2Fmyride-ha-bridge)
+
+Or add `https://github.com/legrego/myride-ha-bridge` under **Settings → Apps →
+Install app → ⋮ → Repositories**. Then install **MyRide Bus Bridge**, set
+`tenant_id` and `refresh_token`, and start it.
+
+- MQTT settings come from the Mosquitto broker add-on automatically.
+- The status page and token update are in the HA sidebar (**School Bus**), through
+  ingress, so they sit behind your HA login. No port is exposed.
+- Logs appear on the add-on's **Log** tab, with a timestamp on every line.
+- If you're moving from Docker/Portainer, stop that container first. Two bridges
+  would publish to the same topics. Entity IDs stay the same.
+
+Releasing: the add-on image is built by `.github/workflows/addon-image.yaml` with
+Home Assistant's builder actions. It publishes only when `version` in
+`myride_bridge/config.yaml` (kept equal to `package.json`) is new; an existing
+version is never overwritten. The first release creates three GHCR packages,
+`myride-ha-bridge-addon` plus `amd64-` and `aarch64-myride-ha-bridge-addon`. Make
+all three **public**, or the Supervisor can't pull them.
+
 **systemd** — create `/etc/systemd/system/myride-bridge.service`:
 
 ```ini

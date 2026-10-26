@@ -142,11 +142,11 @@ describe("UI (GET /)", () => {
 
   it("POSTs token to /token endpoint on form submit", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes("fetch('/token'"));
+    assert.ok(body.includes("fetch('token'"));
   });
 
   it("fetches /status endpoint from JS", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes("fetch('/status')"));
+    assert.ok(body.includes("fetch('status')"));
   });
 });

@@ -19,12 +19,16 @@ class ApiServer {
    * @param {string}   opts.tokenFile  — Path to persist refresh token
    * @param {function} opts.onNewToken — async callback(refreshToken) for hot-reload
    * @param {function} opts.getStatus  — callback() returning status object
+   * @param {string[]} [opts.allowedRemotes] — if set, only these client IPs are
+   *   served (others get 403). The HA add-on uses it to accept only ingress
+   *   (the Supervisor) and the container's own healthcheck.
    */
-  constructor({ port = 8099, tokenFile, onNewToken, getStatus }) {
+  constructor({ port = 8099, tokenFile, onNewToken, getStatus, allowedRemotes = null }) {
     this.port = port;
     this.tokenFile = tokenFile;
     this.onNewToken = onNewToken;
     this.getStatus = getStatus;
+    this.allowedRemotes = allowedRemotes ? new Set(allowedRemotes) : null;
 
     this.server = http.createServer((req, res) => {
       this._handleRequest(req, res);
@@ -70,17 +74,30 @@ class ApiServer {
     });
   }
 
+  _isAllowedRemote(address) {
+    if (!this.allowedRemotes) return true;
+    // IPv4 clients of a dual-stack socket appear as ::ffff:a.b.c.d
+    const ip = String(address || "").replace(/^::ffff:/, "");
+    return this.allowedRemotes.has(ip);
+  }
+
   async _handleRequest(req, res) {
     try {
-      if (req.method === "GET" && req.url === "/") {
+      if (!this._isAllowedRemote(req.socket.remoteAddress)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Forbidden" }));
+        return;
+      }
+      const pathname = req.url.split("?")[0];
+      if (req.method === "GET" && pathname === "/") {
         this._handleGetRoot(req, res);
-      } else if (req.method === "POST" && req.url === "/token") {
+      } else if (req.method === "POST" && pathname === "/token") {
         await this._handlePostToken(req, res);
-      } else if (req.method === "GET" && req.url === "/status") {
+      } else if (req.method === "GET" && pathname === "/status") {
         this._handleGetStatus(req, res);
-      } else if (req.method === "GET" && req.url === "/version") {
+      } else if (req.method === "GET" && pathname === "/version") {
         this._handleGetVersion(req, res);
-      } else if (req.method === "GET" && req.url === "/snippet") {
+      } else if (req.method === "GET" && pathname === "/snippet") {
         this._handleGetSnippet(req, res);
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });

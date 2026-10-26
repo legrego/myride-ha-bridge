@@ -13,6 +13,8 @@ npm install          # Install dependencies
 npm start            # Run the bridge (node src/index.js)
 npm run simulate     # Run in simulation mode (SIMULATE=true node src/index.js)
 npm test             # Run the node:test suite (test/*.test.js)
+docker build .                                # Standalone (Portainer) image, non-root
+docker build --build-arg IMAGE_FLAVOR=addon .  # Home Assistant add-on image, root
 ```
 
 ## Configuration
@@ -47,6 +49,15 @@ src/simulator.js  —  activated via SIMULATE=true; emits fake NewLocation event
                       from four fake buses every 5s; ApiServer runs normally so
                       the UI and /status are accessible for local testing
 ```
+
+**Home Assistant add-on:** The repo is also an HA add-on repository (`repository.yaml` + `myride_bridge/`, following https://contributors.home-assistant.io/apps/).
+- **Image:** the Dockerfile's final stage is chosen by `ARG IMAGE_FLAVOR` (default `runtime`: non-root, Portainer; `addon`: root, because the Supervisor's `/data` is root-owned). The last line must stay `FROM ${IMAGE_FLAVOR}`, because HA's builder actions have no `--target`.
+- **CI:** `.github/workflows/addon-image.yaml` builds it with HA's builder actions (`home-assistant/builder/actions/*@2026.09.0`): native per-arch runners, `io.hass.*` labels, Cosign, and a multi-arch manifest at `config.yaml`'s `image`. `skip-existing` never overwrites a published `version`, so bump `version` in `config.yaml` and `package.json` together (a test enforces equality). PRs build without pushing. `docker-image.yml` only builds the Portainer image.
+- **Runtime:** when `SUPERVISOR_TOKEN` is set, `src/addon-config.js` maps `/data/options.json` onto the usual env vars (options override env; an unset `timezone` falls back to the Supervisor-provided `TZ`), prefixes every console line with an ISO timestamp, and waits for the Supervisor's `/services/mqtt` broker (10 s timeout, 1s→60s backoff).
+- **Ingress:** the UI is ingress-only. `ApiServer`'s `allowedRemotes` serves only `172.30.32.2` (the ingress proxy and watchdog) and loopback (the image HEALTHCHECK). Everything else gets 403. UI fetches must stay **relative** (`'status'`, not `'/status'`).
+- **Token:** the `refresh_token` option is only an env var and is never persisted. `TOKEN_FILE` is written only by `POST /token` and, once it exists, beats the option, so the option must stay set until a token has been submitted through the UI.
+- **AppArmor:** `myride_bridge/apparmor.txt` ships in **complain** mode. The plan is to collect `apparmor="ALLOWED"` audit entries over a full school day, add what's missing, then drop `complain` in the next release.
+- **Reading logs:** with the Home Assistant MCP, find the slug with `ha_get_app(source="installed")` (`<repo-hash>_myride_bridge`), then call `ha_get_logs(source="supervisor", slug=…)`.
 
 **Simulation Mode:** Set `SIMULATE=true` (or `npm run simulate`) to run without a
 real MyRide account. Four fake buses do a random walk around a New York area suburb.
