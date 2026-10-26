@@ -1,66 +1,100 @@
 # MyRide Bus Bridge
 
-Streams live MyRide K-12 school bus GPS into Home Assistant over MQTT. It creates
-the same student-centric entities as the standalone Docker deployment.
+Live MyRide K-12 school bus tracking in Home Assistant. Each student linked to your
+MyRide account becomes a device with the bus on the map, stops away, predicted
+arrival and an "approaching" sensor.
 
 ## Setup
 
-1. Install and start the **Mosquitto broker** add-on. The bridge picks up its
-   credentials automatically, so you don't need any MQTT settings.
-2. Run `capture-tokens.js` in your browser while logged in to MyRide (see the
-   [project README](https://github.com/legrego/myride-ha-bridge#2-capture-your-refresh-token)).
-   It prints your **tenant ID** and **refresh token**.
-3. On the **Configuration** tab, fill in the tenant ID, then start the add-on.
-4. Open the status page (**Open Web UI**) and paste the refresh token under
-   **Token Management**. The bridge starts streaming right away and saves the
-   token in its own storage, so it survives restarts and updates.
+### 1. Install the MQTT broker
 
-The add-on won't start until the tenant ID is set. You can put the refresh token
-in the `refresh_token` option instead of step 4; the bridge reads the option at
-every start and doesn't save a copy of it, so leave it set. With no token at all,
-the bridge waits on the status page for one.
+If you don't already use it, install and start the **Mosquitto broker** app. Then, in
+**Settings → Devices & services**, add the **MQTT** integration that Home Assistant
+discovers. The bridge finds the broker by itself, so it needs no MQTT settings.
 
-When the token expires, paste a new one on the status page (no restart needed).
-The bridge saves that token in its own storage and uses it from then on, ahead of
-the option, so later changes to the `refresh_token` option have no effect.
+### 2. Get your tenant ID and refresh token
 
-> If you're moving from a Portainer/Docker deployment, stop that container
-> first. Two bridges would publish to the same MQTT topics. Entity IDs stay the
-> same.
+You need a computer with Chrome, Edge or Firefox for this. A phone won't work.
 
-## Status page
+1. Sign in at [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
+2. Open the [token snippet](https://raw.githubusercontent.com/legrego/myride-ha-bridge/main/src/capture-tokens.js)
+   in a new tab, select all of it and copy it.
+3. Go back to the MyRide tab, press **F12** (on a Mac, **⌥⌘J** in Chrome or Edge,
+   **⌥⌘K** in Firefox) and select the **Console** tab.
+4. Paste the snippet and press **Enter**. If the browser says pasting isn't allowed,
+   type `allow pasting`, press **Enter**, and paste again.
 
-Select **Open Web UI**, or turn on **Show in sidebar** to get a **School Bus**
-entry. The page shows the connection state and tracked buses, and has the form for
-updating an expired refresh token. It's served through Home Assistant's ingress,
-so it's behind your Home Assistant login and isn't exposed on your network.
+The console prints your **Tenant ID** and **Refresh token**. The refresh token is a
+sign-in credential for your MyRide account, so don't share it.
+
+### 3. Configure and start
+
+1. On the **Configuration** tab, paste the **Tenant ID** and **Refresh token**, then
+   select **Save**.
+2. On the **Info** tab, turn on **Show in sidebar** and **Watchdog**, then select
+   **Start**.
+3. Open **School Bus** in the sidebar. **MyRide K-12**, **MQTT** and **Credentials**
+   should show green within a few seconds. The students appear as devices under
+   **Settings → Devices & services → MQTT**.
+
+The bus only reports its position during runs, so outside school hours the map pin
+stays where the bus last parked.
+
+## When the token expires
+
+The refresh token lasts about 30 days. When it expires, the bridge keeps running and
+`binary_sensor.myride_bridge_credentials` turns on. To fix it:
+
+1. Repeat step 2 to get a new refresh token. The tenant ID doesn't change.
+2. Open **School Bus** in the sidebar, expand **Token Management**, paste the token
+   and select **Submit Token**.
+
+The bridge starts streaming again within seconds, with no restart. It saves that
+token in its own storage and uses it from then on, ahead of the **Refresh token**
+option, so later changes to the option have no effect.
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `tenant_id` | District UUID from `capture-tokens.js` (required) |
-| `refresh_token` | Optional Cognito refresh token, instead of pasting one on the status page. Keep it set; a token pasted on the status page replaces it |
-| `timezone` | District IANA time zone, used for AM/PM run selection. Leave empty to use your Home Assistant time zone |
-| `approach_radius_meters` | Distance at which "Approaching Stop" turns on (default 500) |
-| `bus_filter` | Optional: track only this bus (for example `BUS 042`) |
-| `log_level` | `debug`, `info`, `warn`, or `error` |
+| Tenant ID | Your district's ID, from step 2 (required) |
+| Refresh token | Your MyRide sign-in token, from step 2. Keep it set until you have submitted a token on the status page, which then replaces it. If you leave it empty, the bridge waits on the status page for a token |
+| District time zone | Used to tell the AM run from the PM run. Leave empty to use your Home Assistant time zone |
+| Approach radius | Distance in meters at which "Approaching Stop" turns on (default 500) |
+| Bus filter | Optional: track only this bus (for example `BUS 042`) |
+| Log level | `debug`, `info`, `warn`, or `error` |
 
-## Logs and health
+## Troubleshooting
 
-Every log line carries a timestamp, on the **Log** tab. The Supervisor's watchdog
-checks the status page and restarts the bridge if it stops responding. For that
-to happen, turn on **Watchdog** on the add-on's **Info** tab.
+- **The app won't start:** fill in **Tenant ID**, and check that the Mosquitto
+  broker app is running.
+- **No devices:** set up the **MQTT** integration (step 1).
+- **Credentials show "Expired" or "Missing":** see
+  [When the token expires](#when-the-token-expires).
+- **Moving from Docker or Portainer:** stop that container first, or two bridges
+  publish to the same MQTT topics. Entity IDs stay the same.
+
+Every log line on the **Log** tab carries a timestamp. More help, the full entity
+list and automation examples are in the
+[project README](https://github.com/legrego/myride-ha-bridge#readme).
+
+## Status page
+
+Select **Open Web UI**, or use **School Bus** in the sidebar. The page shows the
+connection state and tracked buses, and has the form for updating an expired refresh
+token. It's served through Home Assistant's ingress, so it's behind your Home
+Assistant login and isn't exposed on your network. With **Watchdog** on, the
+Supervisor restarts the bridge if the page stops responding.
 
 ## Security
 
-The add-on asks for no extra privileges and has no open ports. It runs with its
-own AppArmor profile. In this release that profile is in *complain* mode: it logs
-what it would block without blocking anything, so it can be checked against a
-full school day and then enforced in a later release.
+The app asks for no extra privileges and has no open ports. It runs with its own
+AppArmor profile. In this release that profile is in *complain* mode: it logs what it
+would block without blocking anything, so it can be checked against a full school day
+and then enforced in a later release.
 
 ## Help and license
 
 Questions and bug reports go to
-[GitHub issues](https://github.com/legrego/myride-ha-bridge/issues). The project
-is MIT-licensed. It isn't affiliated with Tyler Technologies.
+[GitHub issues](https://github.com/legrego/myride-ha-bridge/issues). The project is
+MIT-licensed. It isn't affiliated with Tyler Technologies.
