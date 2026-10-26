@@ -34,7 +34,6 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          target: runtime
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
@@ -43,23 +42,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ github.sha }}
-
-      # The Supervisor pulls <image>:<version>, so tag with config.yaml's version.
-      - name: Read add-on version
-        id: addon
-        run: echo "version=$(sed -nE 's/^version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' myride_bridge/config.yaml)" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push Home Assistant add-on image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          target: addon
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            GIT_COMMIT=${{ github.sha }}
-            BUILD_TIME=${{ github.event.head_commit.timestamp }}
-          tags: |
-            ghcr.io/${{ github.repository }}-addon:latest
-            ghcr.io/${{ github.repository }}-addon:${{ steps.addon.outputs.version }}

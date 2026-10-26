@@ -94,6 +94,9 @@ const apiServer = new ApiServer({
   tokenFile: config.api.tokenFile,
   onNewToken: (token) => handleNewToken(token), // wired below
   getStatus: () => getBridgeStatus(),            // wired below
+  // As an add-on the UI is served through ingress: accept only the Supervisor
+  // (ingress proxy + watchdog) and loopback (the image HEALTHCHECK).
+  allowedRemotes: isAddon ? ["172.30.32.2", "127.0.0.1", "::1"] : null,
 });
 
 // Load persisted token (file takes precedence over env var)

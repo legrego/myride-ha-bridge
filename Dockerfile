@@ -1,3 +1,8 @@
+# Which image to produce: "runtime" (standalone/Portainer, non-root — the
+# default) or "addon" (Home Assistant add-on). Selected with a build arg rather
+# than --target because HA's builder actions have no target input.
+ARG IMAGE_FLAVOR=runtime
+
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM node:22-alpine AS deps
 
@@ -46,12 +51,16 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 CMD ["node", "src/index.js"]
 
-# ── Home Assistant add-on (build with --target addon) ─────────────────────────
+# ── Home Assistant add-on (--build-arg IMAGE_FLAVOR=addon) ────────────────────
 # Runs as root: the Supervisor bind-mounts /data owned by root, and the bridge
-# must write the refresh token there.
+# must write the refresh token there. The io.hass.* labels are added by the
+# builder actions in CI.
 FROM base AS addon
 
-# ── Standalone runtime (default target — keep it last) ───────────────────────
+# ── Standalone runtime ────────────────────────────────────────────────────────
 FROM base AS runtime
 
 USER bridge
+
+# ── Final image, chosen by IMAGE_FLAVOR ───────────────────────────────────────
+FROM ${IMAGE_FLAVOR}

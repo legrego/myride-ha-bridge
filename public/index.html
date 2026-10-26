@@ -652,7 +652,7 @@
 
     async function fetchStatus() {
       try {
-        const r = await fetch('/status');
+        const r = await fetch('status');
         const s = await r.json();
         renderVersion(s.version);
         $('sim-banner').className = s.simulate ? 'visible' : '';
@@ -679,7 +679,7 @@
       const btn = e.target.querySelector('button');
       btn.disabled = true;
       try {
-        const r = await fetch('/token', { method: 'POST', body: token });
+        const r = await fetch('token', { method: 'POST', body: token });
         const data = await r.json();
         if (r.ok) {
           msg.className = 'ok';
@@ -708,7 +708,7 @@
       if (!snippetDetails.open || snippetLoaded) return;
       snippetLoaded = true;
       try {
-        const text = await fetch('/snippet').then(r => r.text());
+        const text = await fetch('snippet').then(r => r.text());
         $('snippet-code').textContent = text;
       } catch {
         $('snippet-code').textContent = 'Could not load snippet.';

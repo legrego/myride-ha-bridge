@@ -13,8 +13,8 @@ npm install          # Install dependencies
 npm start            # Run the bridge (node src/index.js)
 npm run simulate     # Run in simulation mode (SIMULATE=true node src/index.js)
 npm test             # Run the node:test suite (test/*.test.js)
-docker build .                  # Standalone (Portainer) image, non-root
-docker build --target addon .   # Home Assistant add-on image, root
+docker build .                                # Standalone (Portainer) image, non-root
+docker build --build-arg IMAGE_FLAVOR=addon .  # Home Assistant add-on image, root
 ```
 
 ## Configuration
@@ -47,7 +47,14 @@ src/simulator.js  —  activated via SIMULATE=true; emits fake NewLocation event
                       the UI and /status are accessible for local testing
 ```
 
-**Home Assistant add-on:** The repo is also an HA add-on repository (`repository.yaml` + `myride_bridge/config.yaml`). The add-on uses the prebuilt multi-arch image `ghcr.io/legrego/myride-ha-bridge-addon:<version>`, which is the Dockerfile's `addon` target. That target runs as root because the Supervisor's `/data` is root-owned. The default `runtime` target (Portainer) stays non-root and must remain the **last** stage. CI tags the add-on image with `config.yaml`'s `version`, and a test keeps that equal to `package.json`'s, so bump both to release. When `SUPERVISOR_TOKEN` is set, `src/addon-config.js` maps `/data/options.json` onto the usual env vars (options override env, because the only env values there are image defaults like `LOG_LEVEL`). It also prefixes every console line with an ISO timestamp and, if `MQTT_BROKER` is unset, takes the broker from the Supervisor's `/services/mqtt`. The persisted `TOKEN_FILE` still beats the `refresh_token` option, which only bootstraps the first start. **Reading logs:** with the Home Assistant MCP, find the slug with `ha_get_app(source="installed")` (`<repo-hash>_myride_bridge`), then call `ha_get_logs(source="supervisor", slug=…)`.
+**Home Assistant add-on:** The repo is also an HA add-on repository (`repository.yaml` + `myride_bridge/`, following https://contributors.home-assistant.io/apps/).
+- **Image:** the Dockerfile's final stage is chosen by `ARG IMAGE_FLAVOR` (default `runtime`: non-root, Portainer; `addon`: root, because the Supervisor's `/data` is root-owned). The last line must stay `FROM ${IMAGE_FLAVOR}`, because HA's builder actions have no `--target`.
+- **CI:** `.github/workflows/addon-image.yaml` builds it with HA's builder actions (`home-assistant/builder/actions/*@2026.09.0`): native per-arch runners, `io.hass.*` labels, Cosign, and a multi-arch manifest at `config.yaml`'s `image`. `skip-existing` never overwrites a published `version`, so bump `version` in `config.yaml` and `package.json` together (a test enforces equality). PRs build without pushing. `docker-image.yml` only builds the Portainer image.
+- **Runtime:** when `SUPERVISOR_TOKEN` is set, `src/addon-config.js` maps `/data/options.json` onto the usual env vars (options override env; an unset `timezone` falls back to the Supervisor-provided `TZ`), prefixes every console line with an ISO timestamp, and waits for the Supervisor's `/services/mqtt` broker (10 s timeout, 1s→60s backoff).
+- **Ingress:** the UI is ingress-only. `ApiServer`'s `allowedRemotes` serves only `172.30.32.2` (the ingress proxy and watchdog) and loopback (the image HEALTHCHECK). Everything else gets 403. UI fetches must stay **relative** (`'status'`, not `'/status'`).
+- **Token:** the persisted `TOKEN_FILE` still beats the `refresh_token` option, which only bootstraps the first start.
+- **AppArmor:** `myride_bridge/apparmor.txt` ships in **complain** mode. The plan is to collect `apparmor="ALLOWED"` audit entries over a full school day, add what's missing, then drop `complain` in the next release.
+- **Reading logs:** with the Home Assistant MCP, find the slug with `ha_get_app(source="installed")` (`<repo-hash>_myride_bridge`), then call `ha_get_logs(source="supervisor", slug=…)`.
 
 **Simulation Mode:** Set `SIMULATE=true` (or `npm run simulate`) to run without a
 real MyRide account. Four fake buses do a random walk around a New York area suburb.

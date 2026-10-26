@@ -1,0 +1,25 @@
+configuration:
+  tenant_id:
+    name: Tenant ID
+    description: Your district's MyRide tenant (a UUID). capture-tokens.js prints it.
+  refresh_token:
+    name: Refresh token
+    description: >-
+      Cognito refresh token from capture-tokens.js. Only used on the first start;
+      after that, update an expired token from the add-on's web UI.
+  timezone:
+    name: District time zone
+    description: >-
+      IANA time zone of the school district, such as America/Chicago. Leave empty
+      to use your Home Assistant time zone.
+  approach_radius_meters:
+    name: Approach radius
+    description: Distance in meters at which the "Approaching Stop" sensor turns on.
+  bus_filter:
+    name: Bus filter
+    description: >-
+      Optional. Track only this bus, such as BUS 042. Leave empty to follow each
+      student's assigned bus automatically, including substitutes.
+  log_level:
+    name: Log level
+    description: How much detail to write to the add-on log.

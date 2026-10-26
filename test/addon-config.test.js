@@ -169,8 +169,50 @@ describe("installLogTimestamps", () => {
 });
 
 describe("add-on manifest", () => {
+  const appDir = path.join(__dirname, "..", "myride_bridge");
+  const read = (...p) => fs.readFileSync(path.join(...p), "utf-8");
+
+  // Keys of a top-level YAML mapping block (two-space indented children).
+  // Enough for our flat config/translation files without a YAML dependency.
+  function blockKeys(yaml, block) {
+    const lines = yaml.split("\n");
+    const start = lines.findIndex((l) => l === `${block}:`);
+    assert.ok(start >= 0, `${block}: block present`);
+    const keys = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^\S/.test(line)) break;
+      const m = line.match(/^  ([A-Za-z0-9_]+):/);
+      if (m) keys.push(m[1]);
+    }
+    return keys;
+  }
+
+  it("only gives defaults for options in the schema", () => {
+    const yaml = read(appDir, "config.yaml");
+    const schema = blockKeys(yaml, "schema");
+    for (const key of blockKeys(yaml, "options")) assert.ok(schema.includes(key), key);
+  });
+
+  it("translates every option in the schema", () => {
+    const schema = blockKeys(read(appDir, "config.yaml"), "schema");
+    const translated = blockKeys(read(appDir, "translations", "en.yaml"), "configuration");
+    assert.deepEqual([...translated].sort(), [...schema].sort());
+  });
+
+  it("names the AppArmor profile after the slug", () => {
+    const slug = read(appDir, "config.yaml").match(/^slug:\s*(\S+)/m)[1];
+    assert.match(read(appDir, "apparmor.txt"), new RegExp(`^profile ${slug} `, "m"));
+  });
+
+  it("builds the non-root runtime image by default", () => {
+    const dockerfile = read(__dirname, "..", "Dockerfile");
+    assert.match(dockerfile, /^ARG IMAGE_FLAVOR=runtime$/m);
+    const froms = dockerfile.match(/^FROM .*$/gm);
+    assert.equal(froms[froms.length - 1], "FROM ${IMAGE_FLAVOR}");
+  });
+
   it("keeps config.yaml's version in sync with package.json", () => {
-    const yaml = fs.readFileSync(path.join(__dirname, "..", "myride_bridge", "config.yaml"), "utf-8");
+    const yaml = read(appDir, "config.yaml");
     const match = yaml.match(/^version:\s*"?([^"\n]+)"?\s*$/m);
     assert.ok(match, "config.yaml has a version");
     assert.equal(match[1], require("../package.json").version);

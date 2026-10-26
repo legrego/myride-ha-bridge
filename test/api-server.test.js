@@ -146,3 +146,70 @@ describe("ApiServer", () => {
     });
   });
 });
+
+describe("ApiServer routing and remote allowlist", () => {
+  async function startServer(opts = {}) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "apitest-"));
+    const server = new ApiServer({
+      port: 0,
+      tokenFile: path.join(tmpDir, "token"),
+      onNewToken: async () => {},
+      getStatus: () => ({ ok: true }),
+      ...opts,
+    });
+    await server.start();
+    return { server, port: server.server.address().port, tmpDir };
+  }
+
+  async function stopServer({ server, tmpDir }) {
+    await server.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  it("routes on the path, ignoring a query string", async () => {
+    const ctx = await startServer();
+    try {
+      assert.equal((await request(ctx.port, "GET", "/status?x=1")).status, 200);
+      assert.equal((await request(ctx.port, "GET", "/?ingress=1")).status, 200);
+    } finally {
+      await stopServer(ctx);
+    }
+  });
+
+  it("serves every client when no allowlist is set", async () => {
+    const ctx = await startServer();
+    try {
+      assert.equal((await request(ctx.port, "GET", "/status")).status, 200);
+    } finally {
+      await stopServer(ctx);
+    }
+  });
+
+  it("serves an allowed client", async () => {
+    const ctx = await startServer({ allowedRemotes: ["172.30.32.2", "127.0.0.1", "::1"] });
+    try {
+      assert.equal((await request(ctx.port, "GET", "/status")).status, 200);
+    } finally {
+      await stopServer(ctx);
+    }
+  });
+
+  it("rejects a client that is not on the allowlist", async () => {
+    const ctx = await startServer({ allowedRemotes: ["172.30.32.2"] });
+    try {
+      const res = await request(ctx.port, "GET", "/status");
+      assert.equal(res.status, 403);
+      assert.equal((await request(ctx.port, "POST", "/token", "tok")).status, 403);
+    } finally {
+      await stopServer(ctx);
+    }
+  });
+
+  it("matches IPv4-mapped IPv6 addresses", () => {
+    const server = new ApiServer({ tokenFile: "/dev/null", allowedRemotes: ["172.30.32.2"] });
+    assert.equal(server._isAllowedRemote("::ffff:172.30.32.2"), true);
+    assert.equal(server._isAllowedRemote("172.30.32.2"), true);
+    assert.equal(server._isAllowedRemote("::ffff:172.30.32.1"), false);
+    assert.equal(server._isAllowedRemote(undefined), false);
+  });
+});
