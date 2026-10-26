@@ -218,7 +218,8 @@ Expected output:
 
 Or add `https://github.com/legrego/myride-ha-bridge` under **Settings → Apps →
 Install app → ⋮ → Repositories**. Then install **MyRide Bus Bridge**, set
-`tenant_id` and `refresh_token`, and start it.
+`tenant_id`, start it, and paste your refresh token on its status page (or set
+the `refresh_token` option).
 
 - MQTT settings come from the Mosquitto broker add-on automatically.
 - The status page and token update are in the HA sidebar (**School Bus**), through
@@ -418,6 +419,10 @@ refresh token itself expires (~30 days), the bridge **does not crash**. Instead 
 2. Stops the SignalR data stream
 3. Sets `binary_sensor.myride_bridge_credentials` to **ON** (problem) in Home Assistant
 4. Keeps MQTT and the API server running so you can recover without restarting
+
+With no token configured at all (a fresh install), the bridge likewise starts only
+the API server and waits: submit a token on the status page or via `POST /token`
+and it starts streaming.
 
 ### Updating an Expired Token
 

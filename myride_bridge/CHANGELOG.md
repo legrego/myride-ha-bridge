@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1
+
+### Fixed
+
+- A fresh install with no refresh token no longer exits at startup. The status
+  page loads and waits for a token, and submitting one starts the bridge.
+- A saved token that had already expired at startup left the bridge idle even
+  after a new token was submitted. The new token now starts it.
+
 ## 1.1.0
 
 ### Added

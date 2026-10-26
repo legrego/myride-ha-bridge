@@ -658,13 +658,17 @@
         $('sim-banner').className = s.simulate ? 'visible' : '';
         setPill('s-signalr', s.signalrConnected, s.signalrConnected ? 'Connected' : 'Disconnected');
         setPill('s-mqtt', s.mqttConnected, s.mqttConnected ? 'Connected' : 'Disconnected');
-        setPill('s-creds', !s.tokenExpired, s.tokenExpired ? 'Expired' : 'Valid');
-        $('cred-banner').className = s.tokenExpired ? 'visible' : '';
+        const needsToken = s.tokenExpired || s.tokenMissing;
+        setPill('s-creds', !needsToken, s.tokenMissing ? 'Missing' : s.tokenExpired ? 'Expired' : 'Valid');
+        $('cred-banner').textContent = s.tokenMissing
+          ? 'No refresh token configured — submit one below to start the bridge'
+          : 'Credentials expired — submit a new refresh token below';
+        $('cred-banner').className = needsToken ? 'visible' : '';
         lastTokenExpiresAt = s.tokenExpiresAt;
         lastTokenExpired = s.tokenExpired;
         formatTokenExpiry(s.tokenExpiresAt, s.tokenExpired);
         $('last-refresh').textContent = 'Last updated ' + new Date().toLocaleTimeString();
-        if (s.tokenExpired) $('token-sections').open = true;
+        if (needsToken) $('token-sections').open = true;
         renderBuses(s.buses || []);
       } catch {
         $('last-refresh').textContent = 'Status unavailable';
