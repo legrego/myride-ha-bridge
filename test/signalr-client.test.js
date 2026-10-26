@@ -1,4 +1,4 @@
-const { describe, it, beforeEach } = require("node:test");
+const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const signalR = require("@microsoft/signalr");
 const { MyRideSignalRClient } = require("../src/signalr-client");
@@ -262,6 +262,126 @@ describe("MyRideSignalRClient", () => {
       };
       await client.stop();
       assert.equal(stopCalled, true);
+    });
+  });
+
+  describe("with a fake HubConnection (hubConnectionFactory)", () => {
+    // Minimal stand-in for @microsoft/signalr's HubConnection.
+    function fakeConnection(id) {
+      const conn = {
+        connectionId: id,
+        state: "Disconnected",
+        handlers: {},
+        closeCallbacks: [],
+        stopCalls: 0,
+        on(method, fn) { this.handlers[method] = fn; },
+        onclose(fn) { this.closeCallbacks.push(fn); },
+        async start() { this.state = "Connected"; },
+        async stop() {
+          this.stopCalls++;
+          this.state = "Disconnected";
+          this.serverClose(); // the real library fires onclose on stop()
+        },
+        // Fire onclose as the library does when the socket closes.
+        serverClose(error) { for (const cb of this.closeCallbacks) cb(error); },
+        invoke(method, ...args) { this.handlers[method](...args); },
+      };
+      return conn;
+    }
+
+    function makeClient(opts = {}) {
+      const conns = [];
+      const client = new MyRideSignalRClient({
+        tenantId: "t",
+        accessTokenFactory: () => "tok",
+        hubConnectionFactory: () => {
+          const c = fakeConnection(`conn-${conns.length + 1}`);
+          conns.push(c);
+          return c;
+        },
+        ...opts,
+      });
+      return { client, conns };
+    }
+
+    // Keep the client's own console lines out of the test output.
+    let restoreLog;
+    beforeEach(() => {
+      const { log, warn } = console;
+      console.log = () => {};
+      console.warn = () => {};
+      restoreLog = () => { console.log = log; console.warn = warn; };
+    });
+    afterEach(() => restoreLog());
+
+    it("emits serverError for errorcode and error invocations", async () => {
+      const { client, conns } = makeClient();
+      const seen = [];
+      client.on("serverError", (e) => seen.push(e));
+      await client.start();
+      conns[0].invoke("errorcode", 42, "no runs");
+      conns[0].invoke("error", { message: "nope" });
+      assert.deepEqual(seen, [
+        { method: "errorcode", args: [42, "no runs"] },
+        { method: "error", args: [{ message: "nope" }] },
+      ]);
+    });
+
+    it("emits frame for a filtered-out bus but not location", async () => {
+      const { client, conns } = makeClient({ busFilter: "BUS 042" });
+      const frames = [];
+      const locations = [];
+      client.on("frame", (d) => frames.push(d.assetUniqueId));
+      client.on("location", (d) => locations.push(d.assetUniqueId));
+      await client.start();
+      conns[0].invoke("NewLocation", { assetUniqueId: "BUS 099" });
+      conns[0].invoke("NewLocation", { assetUniqueId: "BUS 042" });
+      assert.deepEqual(frames, ["BUS 099", "BUS 042"]);
+      assert.deepEqual(locations, ["BUS 042"]);
+    });
+
+    it("does not emit closed on stop() or restart()", async () => {
+      const { client, conns } = makeClient();
+      let closed = 0;
+      client.on("closed", () => closed++);
+      await client.start();
+      await client.restart();
+      assert.equal(conns.length, 2);
+      assert.equal(conns[0].stopCalls, 1);
+      assert.equal(client.connectionId, "conn-2");
+      await client.stop();
+      assert.equal(closed, 0);
+    });
+
+    it("emits closed for a server-side close of the current connection", async () => {
+      const { client, conns } = makeClient();
+      const errors = [];
+      client.on("closed", (e) => errors.push(e));
+      await client.start();
+      const err = new Error("WebSocket closed with status code: 1006");
+      conns[0].serverClose(err);
+      assert.deepEqual(errors, [err]);
+    });
+
+    it("ignores a late onclose from a superseded connection", async () => {
+      const { client, conns } = makeClient();
+      let closed = 0;
+      client.on("closed", () => closed++);
+      await client.start();
+      await client.restart();
+      conns[0].serverClose(new Error("late")); // e.g. delayed socket teardown
+      assert.equal(closed, 0);
+      conns[1].serverClose(new Error("1006"));
+      assert.equal(closed, 1);
+    });
+
+    it("restart() still starts a fresh connection when stopping the old one fails", async () => {
+      const { client, conns } = makeClient();
+      await client.start();
+      conns[0].stop = async () => { throw new Error("already gone"); };
+      await client.restart();
+      assert.equal(conns.length, 2);
+      assert.equal(client.state, "Connected");
     });
   });
 });

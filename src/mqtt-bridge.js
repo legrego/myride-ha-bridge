@@ -15,6 +15,10 @@
  *   - sensor.myride_student_<id>_delay            — minutes behind (+) / ahead (−) schedule
  *   - sensor.myride_student_<id>_predicted_arrival — schedule-anchored predicted arrival (timestamp)
  *
+ * Bridge-level entities live on one `myride_bridge` device: the credentials
+ * problem sensor, and the connection-level stream health
+ * (binary_sensor.myride_bridge_position_stream, sensor.myride_bridge_last_frame_received).
+ *
  * The device_tracker uses the "json_attributes" pattern so HA gets
  * latitude, longitude, and gps_accuracy in one payload.
  */
@@ -49,6 +53,54 @@ const ORIGIN = {
 // SignalR stops delivering fixes while MQTT stays connected (the LWT can't) — long
 // enough not to flap in a GPS dead-zone, short enough not to show a stale value.
 const PER_FIX_EXPIRE_AFTER = 600;
+
+// Minimum interval between publishes of the stream-health attributes (absent a
+// state change) and of last_frame_received.
+const STREAM_HEALTH_THROTTLE_MS = 60_000;
+// Max length of the server-error args echoed into the position_stream attributes.
+const SERVER_ERROR_ARGS_MAX_CHARS = 500;
+
+function isoOrNull(ms) {
+  return ms != null ? new Date(ms).toISOString() : null;
+}
+
+/**
+ * Truncate a value's JSON to `max` characters (for logs/attributes).
+ *
+ * @param {*} value
+ * @param {number} [max=SERVER_ERROR_ARGS_MAX_CHARS]
+ * @returns {string}
+ */
+function truncateJson(value, max = SERVER_ERROR_ARGS_MAX_CHARS) {
+  let json;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    json = String(value);
+  }
+  if (json === undefined) json = String(value);
+  return json.length > max ? `${json.slice(0, max)}…` : json;
+}
+
+/**
+ * position_stream json_attributes payload from a StreamSupervisor status.
+ */
+function streamHealthAttributes(status) {
+  const err = status.lastServerError;
+  return {
+    connected_since: isoOrNull(status.connectedSinceMs),
+    connection_reason: status.connectionReason ?? null,
+    connection_id: status.connectionId ?? null,
+    reconnects: status.reconnects ?? 0,
+    last_reconnect_reason: status.lastReconnectReason ?? null,
+    last_reconnect_at: isoOrNull(status.lastReconnectMs),
+    watched_buses: status.watchedBuses || [],
+    last_server_error: err
+      ? { method: err.method, at: isoOrNull(err.atMs), args: truncateJson(err.args) }
+      : null,
+    frames_last_hour: status.framesLastHour ?? null,
+  };
+}
 
 // Max snap distance (m) from the live bus to the nearest route vertex before we
 // treat the fix as off-route/GPS-noise and fall back to haversine.
@@ -170,6 +222,8 @@ class MqttBridge {
     // failures (off-route connector stretches / wrong-pass) before giving up. Reset
     // whenever stop progress is cleared (stop identity change / no run).
     this.lastRouteCumByStudent = new Map();
+    // Last published bridge-level stream health (see publishStreamHealth).
+    this.streamHealth = { state: undefined, attrsPublishedMs: null, lastFrame: undefined, lastFramePublishedMs: null };
     // studentId → last published feed_live state (publish on change only).
     this.feedLiveByStudent = new Map();
     // studentId → bool: whether the last fix was tracked in route mode (a trusted
@@ -314,21 +368,31 @@ class MqttBridge {
   }
 
   /**
+   * Device and availability blocks shared by the bridge-level entities (the
+   * `myride_bridge` device: credentials, position stream, last frame received).
+   */
+  _bridgeDeviceConfig() {
+    return {
+      device: {
+        identifiers: ["myride_bridge"],
+        name: "MyRide Bridge",
+        manufacturer: "Tyler Technologies",
+        model: "MyRide K-12 Bridge",
+      },
+      availability: {
+        topic: `${this.topicPrefix}/bridge/status`,
+        payload_available: "online",
+        payload_not_available: "offline",
+      },
+    };
+  }
+
+  /**
    * Publish HA discovery config for a bridge-level credential status sensor.
    * Call once after MQTT connects.
    */
   publishCredentialStatusDiscovery() {
-    const deviceConfig = {
-      identifiers: ["myride_bridge"],
-      name: "MyRide Bridge",
-      manufacturer: "Tyler Technologies",
-      model: "MyRide K-12 Bridge",
-    };
-    const availability = {
-      topic: `${this.topicPrefix}/bridge/status`,
-      payload_available: "online",
-      payload_not_available: "offline",
-    };
+    const { device, availability } = this._bridgeDeviceConfig();
 
     this.client.publish(
       "homeassistant/binary_sensor/myride_bridge_credentials/config",
@@ -340,11 +404,106 @@ class MqttBridge {
         payload_off: "OFF",
         device_class: "problem",
         availability,
-        device: deviceConfig,
+        device,
         icon: "mdi:key-alert",
       }),
       { retain: true }
     );
+  }
+
+  /**
+   * Publish HA discovery for the connection-level stream health entities on the
+   * bridge device. Unlike the per-student `feed_live`, these describe the SignalR
+   * connection itself: whether MyRide is actually tracking it (see
+   * stream-supervisor.js), and when any frame last arrived. Call once after MQTT
+   * connects.
+   */
+  publishStreamHealthDiscovery() {
+    const { device, availability } = this._bridgeDeviceConfig();
+
+    // Position Stream — ON while a watched bus's frames (incl. MyRide's ~5 s
+    // repeats) keep arriving, OFF when runs are expected but the stream is silent,
+    // unknown ("None") when no student rides a bus today.
+    this.client.publish(
+      "homeassistant/binary_sensor/myride_bridge_position_stream/config",
+      JSON.stringify({
+        name: "Position Stream",
+        has_entity_name: true,
+        unique_id: "myride_bridge_position_stream",
+        state_topic: `${this.topicPrefix}/bridge/position_stream`,
+        json_attributes_topic: `${this.topicPrefix}/bridge/position_stream/attributes`,
+        payload_on: "ON",
+        payload_off: "OFF",
+        device_class: "connectivity",
+        entity_category: "diagnostic",
+        availability,
+        device,
+        origin: ORIGIN,
+        icon: "mdi:access-point-network",
+      }),
+      { retain: true }
+    );
+
+    // Last Frame Received — bridge receipt time (not MyRide's fix time) of the
+    // latest NewLocation frame from any bus, before the bus filter.
+    this.client.publish(
+      "homeassistant/sensor/myride_bridge_last_frame_received/config",
+      JSON.stringify({
+        name: "Last Frame Received",
+        has_entity_name: true,
+        unique_id: "myride_bridge_last_frame_received",
+        state_topic: `${this.topicPrefix}/bridge/last_frame_received`,
+        device_class: "timestamp",
+        entity_category: "diagnostic",
+        availability,
+        device,
+        origin: ORIGIN,
+        icon: "mdi:clock-check-outline",
+      }),
+      { retain: true }
+    );
+  }
+
+  /**
+   * Publish stream health. `position_stream` is published on change; its attributes
+   * with each state change and otherwise at most once per STREAM_HEALTH_THROTTLE_MS;
+   * `last_frame_received` at most once per STREAM_HEALTH_THROTTLE_MS (MyRide's ~5 s
+   * repeats would otherwise flood the recorder).
+   *
+   * @param {object} status — StreamSupervisor#status(), plus optional
+   *   `connectionId` and `framesLastHour`
+   * @param {number|null} lastFrameAnyMs — receipt time of the latest frame from any bus
+   * @param {number} [nowMs=Date.now()]
+   */
+  publishStreamHealth(status, lastFrameAnyMs, nowMs = Date.now()) {
+    const base = `${this.topicPrefix}/bridge`;
+    const h = this.streamHealth;
+
+    const state = !status.expected ? "None" : status.live ? "ON" : "OFF";
+    const stateChanged = state !== h.state;
+    if (stateChanged) {
+      h.state = state;
+      this.client.publish(`${base}/position_stream`, state, { retain: true });
+    }
+
+    if (stateChanged || h.attrsPublishedMs == null || nowMs - h.attrsPublishedMs >= STREAM_HEALTH_THROTTLE_MS) {
+      h.attrsPublishedMs = nowMs;
+      this.client.publish(
+        `${base}/position_stream/attributes`,
+        JSON.stringify(streamHealthAttributes(status)),
+        { retain: true }
+      );
+    }
+
+    const lastFrame = lastFrameAnyMs != null ? new Date(lastFrameAnyMs).toISOString() : "None";
+    if (
+      lastFrame !== h.lastFrame &&
+      (h.lastFramePublishedMs == null || nowMs - h.lastFramePublishedMs >= STREAM_HEALTH_THROTTLE_MS)
+    ) {
+      h.lastFrame = lastFrame;
+      h.lastFramePublishedMs = nowMs;
+      this.client.publish(`${base}/last_frame_received`, lastFrame, { retain: true });
+    }
   }
 
   /**
@@ -1523,4 +1682,4 @@ class MqttBridge {
   }
 }
 
-module.exports = { MqttBridge };
+module.exports = { MqttBridge, truncateJson, STREAM_HEALTH_THROTTLE_MS };

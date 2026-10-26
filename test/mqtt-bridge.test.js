@@ -108,6 +108,124 @@ describe("MqttBridge", () => {
     });
   });
 
+  describe("stream health (position_stream / last_frame_received)", () => {
+    const topicCalls = (topic) => publishCalls.filter((c) => c[0] === topic);
+    const T = Date.parse("2026-10-26T12:00:00Z");
+    const status = (overrides = {}) => ({
+      expected: true,
+      live: true,
+      lastWatchedFrameMs: T,
+      connectedSinceMs: T - 60_000,
+      connectionReason: "runs-changed",
+      reconnects: 1,
+      lastReconnectReason: "runs-changed",
+      lastReconnectMs: T - 60_000,
+      watchedBuses: ["BUS 042"],
+      lastServerError: null,
+      connectionId: "abc",
+      framesLastHour: { total: 720, watched: 720 },
+      ...overrides,
+    });
+
+    it("publishes retained diagnostic discovery for both entities on the bridge device", () => {
+      bridge.publishStreamHealthDiscovery();
+      const stream = topicCalls("homeassistant/binary_sensor/myride_bridge_position_stream/config");
+      const frame = topicCalls("homeassistant/sensor/myride_bridge_last_frame_received/config");
+      assert.equal(stream.length, 1);
+      assert.equal(frame.length, 1);
+      for (const [, payload, opts] of [stream[0], frame[0]]) {
+        assert.equal(opts.retain, true);
+        const cfg = JSON.parse(payload);
+        assert.deepEqual(cfg.device.identifiers, ["myride_bridge"]);
+        assert.equal(cfg.entity_category, "diagnostic");
+        assert.equal(cfg.has_entity_name, true);
+        assert.equal(cfg.origin.name, "myride-ha-bridge");
+        assert.equal(cfg.availability.topic, "myride/bridge/status");
+      }
+      const s = JSON.parse(stream[0][1]);
+      assert.equal(s.unique_id, "myride_bridge_position_stream");
+      assert.equal(s.name, "Position Stream");
+      assert.equal(s.device_class, "connectivity");
+      assert.equal(s.state_topic, "myride/bridge/position_stream");
+      assert.equal(s.json_attributes_topic, "myride/bridge/position_stream/attributes");
+      const f = JSON.parse(frame[0][1]);
+      assert.equal(f.unique_id, "myride_bridge_last_frame_received");
+      assert.equal(f.name, "Last Frame Received");
+      assert.equal(f.device_class, "timestamp");
+      assert.equal(f.state_topic, "myride/bridge/last_frame_received");
+    });
+
+    it("shares the device block with the credentials sensor", () => {
+      bridge.publishCredentialStatusDiscovery();
+      bridge.publishStreamHealthDiscovery();
+      const cred = JSON.parse(topicCalls("homeassistant/binary_sensor/myride_bridge_credentials/config")[0][1]);
+      const stream = JSON.parse(topicCalls("homeassistant/binary_sensor/myride_bridge_position_stream/config")[0][1]);
+      assert.deepEqual(stream.device, cred.device);
+      assert.deepEqual(stream.availability, cred.availability);
+    });
+
+    it("publishes position_stream ON / OFF / None, retained, on change only", () => {
+      bridge.publishStreamHealth(status(), T, T);
+      bridge.publishStreamHealth(status(), T, T + 1000);
+      bridge.publishStreamHealth(status({ live: false }), T, T + 2000);
+      bridge.publishStreamHealth(status({ live: false }), T, T + 3000);
+      bridge.publishStreamHealth(status({ expected: false, live: false, watchedBuses: [] }), T, T + 4000);
+      bridge.publishStreamHealth(status({ live: true }), T, T + 5000);
+      const calls = topicCalls("myride/bridge/position_stream");
+      assert.deepEqual(calls.map((c) => c[1]), ["ON", "OFF", "None", "ON"]);
+      assert.ok(calls.every((c) => c[2].retain === true));
+    });
+
+    it("publishes attributes on each state change and otherwise at most once per 60 s", () => {
+      bridge.publishStreamHealth(status(), T, T);
+      bridge.publishStreamHealth(status(), T, T + 30_000);
+      assert.equal(topicCalls("myride/bridge/position_stream/attributes").length, 1);
+      bridge.publishStreamHealth(status({ live: false }), T, T + 31_000); // state change
+      assert.equal(topicCalls("myride/bridge/position_stream/attributes").length, 2);
+      bridge.publishStreamHealth(status({ live: false }), T, T + 91_000);
+      const calls = topicCalls("myride/bridge/position_stream/attributes");
+      assert.equal(calls.length, 3);
+      const attrs = JSON.parse(calls[0][1]);
+      assert.deepEqual(attrs, {
+        connected_since: new Date(T - 60_000).toISOString(),
+        connection_reason: "runs-changed",
+        connection_id: "abc",
+        reconnects: 1,
+        last_reconnect_reason: "runs-changed",
+        last_reconnect_at: new Date(T - 60_000).toISOString(),
+        watched_buses: ["BUS 042"],
+        last_server_error: null,
+        frames_last_hour: { total: 720, watched: 720 },
+      });
+      assert.equal(calls[0][2].retain, true);
+    });
+
+    it("truncates server-error args in the attributes", () => {
+      const big = "x".repeat(2000);
+      bridge.publishStreamHealth(status({ lastServerError: { method: "errorcode", args: [big], atMs: T } }), T, T);
+      const attrs = JSON.parse(topicCalls("myride/bridge/position_stream/attributes")[0][1]);
+      assert.equal(attrs.last_server_error.method, "errorcode");
+      assert.equal(attrs.last_server_error.at, new Date(T).toISOString());
+      assert.ok(attrs.last_server_error.args.length <= 501);
+    });
+
+    it("publishes last_frame_received as the receipt time, None until the first frame, throttled to 60 s", () => {
+      bridge.publishStreamHealth(status(), null, T);
+      bridge.publishStreamHealth(status(), T + 5_000, T + 5_000); // within 60 s of the None publish
+      bridge.publishStreamHealth(status(), T + 60_000, T + 60_000);
+      bridge.publishStreamHealth(status(), T + 65_000, T + 65_000); // throttled
+      bridge.publishStreamHealth(status(), T + 120_000, T + 120_000);
+      bridge.publishStreamHealth(status(), T + 120_000, T + 200_000); // unchanged
+      const calls = topicCalls("myride/bridge/last_frame_received");
+      assert.deepEqual(calls.map((c) => c[1]), [
+        "None",
+        new Date(T + 60_000).toISOString(),
+        new Date(T + 120_000).toISOString(),
+      ]);
+      assert.ok(calls.every((c) => c[2].retain === true));
+    });
+  });
+
   describe("publishCredentialStatus()", () => {
     it("publishes ON when expired=true", () => {
       publishCalls.length = 0;
