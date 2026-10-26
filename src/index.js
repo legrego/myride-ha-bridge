@@ -125,9 +125,13 @@ if (!config.myride.tenantId) {
   process.exit(1);
 }
 
-if (!config.myride.refreshToken && !config.myride.accessToken) {
+// No token is not fatal: the status page is the way to supply one (as an add-on it's
+// the only way short of editing the options), so the bridge serves it and waits —
+// handleNewToken() starts the data side once POST /token delivers a valid token.
+const tokenMissing = !config.myride.refreshToken && !config.myride.accessToken;
+if (tokenMissing) {
   console.error("╔═══════════════════════════════════════════════════════════╗");
-  console.error("║  ERROR: No authentication token configured.              ║");
+  console.error("║  No authentication token configured — waiting for one.   ║");
   console.error("╚═══════════════════════════════════════════════════════════╝");
   console.error();
   console.error("You need to capture your token from the MyRide web app:");
@@ -135,11 +139,17 @@ if (!config.myride.refreshToken && !config.myride.accessToken) {
   console.error("  1. Log in to https://myridek12.tylerapp.com in Chrome");
   console.error("  2. Open DevTools (F12) → Console tab");
   console.error("  3. Paste the contents of capture-tokens.js and press Enter");
-  console.error("  4. Copy the MYRIDE_REFRESH_TOKEN value into your .env file");
+  if (isAddon) {
+    console.error("  4. Open the add-on's Web UI and paste the MYRIDE_REFRESH_TOKEN");
+    console.error("     value under Token Management (or set the refresh_token option)");
+  } else {
+    console.error(`  4. Paste the MYRIDE_REFRESH_TOKEN value on the status page`);
+    console.error(`     (port ${config.api.port}), or set it in your .env file and restart`);
+    console.error();
+    console.error("If the capture script can't find a refresh token, you can set");
+    console.error("MYRIDE_ACCESS_TOKEN instead (but it expires in 60 minutes).");
+  }
   console.error();
-  console.error("If the capture script can't find a refresh token, you can set");
-  console.error("MYRIDE_ACCESS_TOKEN instead (but it expires in 60 minutes).");
-  process.exit(1);
 }
 
 // ─── Token management ────────────────────────────────────────────
@@ -148,12 +158,12 @@ let tokenExpiresAt = 0;
 let refreshTokenExpired = false;
 const busStates = new Map(); // assetUniqueId → { name, lastSeen, speed, moving }
 
-const auth = config.myride.refreshToken
-  ? new CognitoAuth({
-    clientId: config.cognito.clientId,
-    region: config.cognito.region,
-  })
-  : null;
+// Always created: even in static access-token mode (or with no token yet) a
+// refresh token can arrive through POST /token.
+const auth = new CognitoAuth({
+  clientId: config.cognito.clientId,
+  region: config.cognito.region,
+});
 
 // If we only have a raw access token, decode its expiry
 if (currentAccessToken && !config.myride.refreshToken) {
@@ -187,7 +197,7 @@ async function ensureFreshToken() {
   const now = Math.floor(Date.now() / 1000);
 
   // If we have a refresh token and the access token is expiring soon, refresh
-  if (auth && config.myride.refreshToken) {
+  if (config.myride.refreshToken) {
     const needsRefresh = !currentAccessToken || now >= tokenExpiresAt - 300;
     if (needsRefresh) {
       console.log("[Auth] Refreshing access token via Cognito...");
@@ -236,6 +246,8 @@ let mqttBridge = null;
 let signalrClient = null;
 let studentTracker = null;
 let refreshInterval = null;
+// The data-side startup (startBridge) once begun; null while waiting for a token.
+let bridgeStartup = null;
 
 // Bus assetUniqueId → [students] whose current run rides that bus today.
 // Rebuilt on every student poll; used to route SignalR locations to students.
@@ -282,8 +294,8 @@ async function handleTokenExpired() {
   console.error("╚═══════════════════════════════════════════════════════════╝");
   console.error();
   console.error("Your MyRide refresh token is no longer valid.");
-  console.error("To fix: re-run capture-tokens.js in your browser,");
-  console.error("update MYRIDE_REFRESH_TOKEN in .env, and restart the bridge.");
+  console.error("To fix: re-run capture-tokens.js in your browser and paste the new");
+  console.error("refresh token on the status page (no restart needed).");
   console.error();
   console.error("[Bridge] Stopping data stream. MQTT stays connected for HA visibility.");
 
@@ -343,19 +355,28 @@ async function handleNewToken(newRefreshToken) {
   reconnectSignalR("token");
 
   // Restart periodic refresh if it was cleared
-  if (auth && !refreshInterval) {
-    refreshInterval = setInterval(async () => {
-      try {
-        await ensureFreshToken();
-      } catch (err) {
-        if (err.tokenExpired) {
-          await handleTokenExpired();
-        } else {
-          console.error("[Auth] Periodic refresh failed:", err.message);
-        }
+  startRefreshInterval();
+
+  // No token at boot (or it was already expired): the data side never started.
+  // Start it now, without holding up the API response (it waits on MQTT,
+  // the first student poll and the SignalR connect).
+  if (!bridgeStartup) runBridge();
+}
+
+/** Periodic token refresh (every 50 minutes); no-op if already running. */
+function startRefreshInterval() {
+  if (refreshInterval || !config.myride.refreshToken) return;
+  refreshInterval = setInterval(async () => {
+    try {
+      await ensureFreshToken();
+    } catch (err) {
+      if (err.tokenExpired) {
+        await handleTokenExpired();
+      } else {
+        console.error("[Auth] Periodic refresh failed:", err.message);
       }
-    }, 50 * 60 * 1000);
-  }
+    }
+  }, 50 * 60 * 1000);
 }
 
 function logDropSummary({ busId, count, newestLogTime, lastAcceptedMs }) {
@@ -494,6 +515,8 @@ function getBridgeStatus() {
     bridge: "myride-ha-bridge",
     version,
     tokenExpired: refreshTokenExpired,
+    // No token configured yet: the UI asks for one (the bridge is waiting on it).
+    tokenMissing: !config.myride.refreshToken && !currentAccessToken,
     tokenExpiresAt: tokenExpiresAt ? new Date(tokenExpiresAt * 1000).toISOString() : null,
     tokenExpiresInSeconds: tokenExpiresAt ? Math.max(0, tokenExpiresAt - now) : null,
     signalrConnected: signalrClient ? signalrClient.state === "Connected" : false,
@@ -509,16 +532,48 @@ async function main() {
   console.log("║     MyRide K-12 → Home Assistant MQTT Bridge     ║");
   console.log("╚══════════════════════════════════════════════════╝");
   console.log();
-  console.log(
-    `[Auth] Mode: ${auth ? "refresh token (auto-renewing)" : "static access token"}`
-  );
 
-  // Step 0: Start the API server FIRST so the status UI and POST /token
-  // recovery endpoint are reachable no matter what happens below. If Cognito,
-  // the student poll, or SignalR hang or throw, the page must still load —
-  // otherwise the one tool for fixing a bad token is unavailable exactly when
-  // it's needed (and the reverse proxy returns 502).
+  // Start the API server FIRST so the status UI and POST /token recovery
+  // endpoint are reachable no matter what happens next. If there's no token
+  // yet, or Cognito, the student poll, or SignalR hang or throw, the page must
+  // still load — otherwise the one tool for supplying a token is unavailable
+  // exactly when it's needed (and the reverse proxy returns 502).
   await apiServer.start();
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  if (tokenMissing) {
+    console.log("[Bridge] Waiting for a refresh token from the status page (POST /token).");
+    return;
+  }
+  runBridge();
+}
+
+/**
+ * Start the data side (startBridge) once. A token-expired failure leaves the
+ * bridge idle with the API up; if nothing was built yet, the next valid token
+ * from POST /token starts it again (handleNewToken). Other failures are fatal.
+ */
+function runBridge() {
+  bridgeStartup = startBridge().catch(async (err) => {
+    if (err.tokenExpired) {
+      await handleTokenExpired();
+      // Expired at the first token check: nothing was built, so a new token
+      // must start the bridge rather than hot-swap into it.
+      if (!mqttBridge) bridgeStartup = null;
+      console.log("[Bridge] Idling — submit a new refresh token on the status page.");
+    } else {
+      console.error("Fatal error:", err.message || err);
+      process.exit(1);
+    }
+  });
+}
+
+async function startBridge() {
+  console.log(
+    `[Auth] Mode: ${config.myride.refreshToken ? "refresh token (auto-renewing)" : "static access token"}`
+  );
 
   // Step 1: Get an initial access token
   await ensureFreshToken();
@@ -757,35 +812,7 @@ async function main() {
   }, STREAM_FRAME_LOG_INTERVAL_MS);
 
   // Step 5: Periodic token refresh (every 50 minutes)
-  refreshInterval = auth
-    ? setInterval(async () => {
-      try {
-        await ensureFreshToken();
-      } catch (err) {
-        if (err.tokenExpired) {
-          await handleTokenExpired();
-        } else {
-          console.error("[Auth] Periodic refresh failed:", err.message);
-        }
-      }
-    }, 50 * 60 * 1000)
-    : null;
-
-  // Graceful shutdown
-  async function shutdown(signal) {
-    console.log(`\n[Bridge] ${signal} received, shutting down...`);
-    if (refreshInterval) clearInterval(refreshInterval);
-    if (feedWatchdogInterval) clearInterval(feedWatchdogInterval);
-    if (streamFrameLogInterval) clearInterval(streamFrameLogInterval);
-    if (studentTracker) studentTracker.stop();
-    await signalrClient.stop();
-    await apiServer.stop();
-    await mqttBridge.disconnect();
-    process.exit(0);
-  }
-
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  startRefreshInterval();
 
   console.log();
   console.log("[Bridge] Running. Press Ctrl+C to stop.");
@@ -798,7 +825,7 @@ async function main() {
   } else {
     console.log(`[Bridge] Bus filter: dynamic (driven by student assignments)`);
   }
-  if (!auth) {
+  if (!config.myride.refreshToken) {
     const remaining = tokenExpiresAt - Math.floor(Date.now() / 1000);
     console.warn(
       `[Bridge] ⚠️  Static token mode — will expire in ${Math.round(remaining / 60)} minutes.`
@@ -809,13 +836,21 @@ async function main() {
   }
 }
 
-main().catch(async (err) => {
-  if (err.tokenExpired) {
-    await handleTokenExpired();
-    // Stay alive so MQTT sensor remains visible to HA
-    console.log("[Bridge] Idling — waiting for token to be updated and bridge restarted.");
-  } else {
-    console.error("Fatal error:", err.message || err);
-    process.exit(1);
-  }
+// Graceful shutdown. Registered before the bridge starts, so any part may be
+// missing (still waiting for a token, or startup idled on an expired one).
+async function shutdown(signal) {
+  console.log(`\n[Bridge] ${signal} received, shutting down...`);
+  if (refreshInterval) clearInterval(refreshInterval);
+  if (feedWatchdogInterval) clearInterval(feedWatchdogInterval);
+  if (streamFrameLogInterval) clearInterval(streamFrameLogInterval);
+  if (studentTracker) studentTracker.stop();
+  if (signalrClient) await signalrClient.stop();
+  await apiServer.stop();
+  if (mqttBridge) await mqttBridge.disconnect();
+  process.exit(0);
+}
+
+main().catch((err) => {
+  console.error("Fatal error:", err.message || err);
+  process.exit(1);
 });

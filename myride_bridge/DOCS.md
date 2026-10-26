@@ -10,11 +10,15 @@ the same student-centric entities as the standalone Docker deployment.
 2. Run `capture-tokens.js` in your browser while logged in to MyRide (see the
    [project README](https://github.com/legrego/myride-ha-bridge#2-capture-your-refresh-token)).
    It prints your **tenant ID** and **refresh token**.
-3. On the **Configuration** tab, fill in the tenant ID and refresh token, then
-   start the add-on.
+3. On the **Configuration** tab, fill in the tenant ID, then start the add-on.
+4. Open the status page (**Open Web UI**) and paste the refresh token under
+   **Token Management**. The bridge starts streaming right away and saves the
+   token in its own storage, so it survives restarts and updates.
 
-The add-on won't start until the tenant ID is set. Leave the refresh token in the
-options. The bridge reads it at every start and doesn't save a copy of it.
+The add-on won't start until the tenant ID is set. You can put the refresh token
+in the `refresh_token` option instead of step 4; the bridge reads the option at
+every start and doesn't save a copy of it, so leave it set. With no token at all,
+the bridge waits on the status page for one.
 
 When the token expires, paste a new one on the status page (no restart needed).
 The bridge saves that token in its own storage and uses it from then on, ahead of
@@ -36,7 +40,7 @@ so it's behind your Home Assistant login and isn't exposed on your network.
 | Option | Description |
 |--------|-------------|
 | `tenant_id` | District UUID from `capture-tokens.js` (required) |
-| `refresh_token` | Cognito refresh token. Keep it set; a token pasted on the status page replaces it |
+| `refresh_token` | Optional Cognito refresh token, instead of pasting one on the status page. Keep it set; a token pasted on the status page replaces it |
 | `timezone` | District IANA time zone, used for AM/PM run selection. Leave empty to use your Home Assistant time zone |
 | `approach_radius_meters` | Distance at which "Approaching Stop" turns on (default 500) |
 | `bus_filter` | Optional: track only this bus (for example `BUS 042`) |
