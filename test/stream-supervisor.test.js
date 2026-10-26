@@ -10,11 +10,13 @@ const {
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-26T12:00:00Z");
 
-// A supervisor connected at T0 (as a startup connect), watching `buses`.
+// A supervisor connected at T0 (as a startup connect), watching `buses` — in the
+// real order: the first roster poll runs before the SignalR connect.
 function connected(buses = [], opts) {
   const s = new StreamSupervisor(opts);
-  s.onConnected(T0, "startup");
   if (buses.length) s.setWatchedBuses(buses, T0);
+  s.onConnectStarted(T0);
+  s.onConnected(T0, "startup");
   return s;
 }
 
@@ -57,6 +59,73 @@ describe("StreamSupervisor", () => {
     it("returns null before the first connect (the connect picks the runs up)", () => {
       const s = new StreamSupervisor();
       assert.equal(s.setWatchedBuses(["A"], T0), null);
+      s.onConnectStarted(T0 + 1000);
+      s.onConnected(T0 + 2000, "startup");
+      s.onFrame("A", T0 + 9 * MIN);
+      assert.equal(s.check(T0 + 10 * MIN), null);
+    });
+
+    it("retries a roster change that arrived while a connect was in flight", () => {
+      const s = connected();
+      // A reconnect starts (e.g. after a socket close) …
+      s.onConnectStarted(T0 + 10 * MIN);
+      // … a poll adds bus B before it finishes: the decision is issued, but index.js
+      // drops it because a reconnect is already in flight.
+      assert.equal(s.setWatchedBuses(["B"], T0 + 10 * MIN + 1000).reason, "runs-changed");
+      s.onConnected(T0 + 10 * MIN + 2000, "closed");
+      // That connection began before the change, so check() re-issues R1 once the
+      // new connection is past the jitter window — even with no watchdog silence.
+      s.onFrame("B", T0 + 10 * MIN + 3000);
+      assert.equal(s.check(T0 + 10 * MIN + 2000 + MIN_RECONNECT_GAP_MS - 1), null);
+      const d = s.check(T0 + 10 * MIN + 2000 + MIN_RECONNECT_GAP_MS);
+      assert.equal(d.reason, "runs-changed");
+      assert.deepEqual(d.detail.next, ["B"]);
+      assert.equal(d.detail.pendingSinceMs, T0 + 10 * MIN + 1000);
+      // A connection started after the change satisfies it.
+      s.onConnectStarted(T0 + 11 * MIN);
+      s.onConnected(T0 + 11 * MIN + 1000, "runs-changed");
+      s.onFrame("B", T0 + 11 * MIN + 2000);
+      assert.equal(s.check(T0 + 13 * MIN), null);
+    });
+
+    it("keeps frames from another watched bus from masking a pending change", () => {
+      const s = connected(["A"]);
+      s.onConnectStarted(T0 + 10 * MIN);
+      s.setWatchedBuses(["A", "B"], T0 + 10 * MIN + 1000); // dropped: connect in flight
+      s.onConnected(T0 + 10 * MIN + 2000, "watchdog");
+      for (let t = T0 + 10 * MIN; t < T0 + 12 * MIN; t += 5000) s.onFrame("A", t);
+      assert.equal(s.check(T0 + 12 * MIN).reason, "runs-changed");
+    });
+
+    it("does not retry a change that preceded the connect attempt (e.g. during a backoff sleep)", () => {
+      const s = connected();
+      s.setWatchedBuses(["A"], T0 + 10 * MIN); // dropped: backoff loop sleeping
+      s.onConnectStarted(T0 + 10 * MIN + 4000);
+      s.onConnected(T0 + 10 * MIN + 5000, "closed");
+      s.onFrame("A", T0 + 11 * MIN);
+      assert.equal(s.check(T0 + 12 * MIN), null);
+    });
+
+    it("retries a change suppressed by the jitter window if the connection predates it", () => {
+      const s = connected();
+      s.onConnectStarted(T0 + 10 * MIN);
+      s.onConnected(T0 + 10 * MIN, "closed");
+      assert.equal(s.setWatchedBuses(["A"], T0 + 10 * MIN + 5000), null); // suppressed
+      s.onFrame("A", T0 + 10 * MIN + 6000);
+      assert.equal(s.check(T0 + 10 * MIN + MIN_RECONNECT_GAP_MS).reason, "runs-changed");
+    });
+
+    it("drops a pending change when the watched set empties", () => {
+      const s = connected();
+      s.onConnectStarted(T0 + 10 * MIN);
+      s.setWatchedBuses(["A"], T0 + 10 * MIN + 1000);
+      s.setWatchedBuses([], T0 + 10 * MIN + 1500);
+      s.onConnected(T0 + 10 * MIN + 2000, "closed");
+      s.setWatchedBuses(["A"], T0 + 10 * MIN + 2500); // within the jitter window
+      s.onConnectStarted(T0 + 11 * MIN);
+      s.onConnected(T0 + 11 * MIN, "runs-changed");
+      s.onFrame("A", T0 + 11 * MIN + 1000);
+      assert.equal(s.check(T0 + 13 * MIN), null);
     });
   });
 
@@ -158,6 +227,19 @@ describe("StreamSupervisor", () => {
       // … and so is the watchdog.
       assert.equal(s.check(T0 + MIN + 5 * MIN - 1), null);
       assert.equal(s.onServerError("error", ["nope"], T0 + MIN + 5 * MIN).reason, "server-error");
+    });
+
+    it("returns null during startup (before the first connect), but records the error", () => {
+      // SignalR dispatches invocations that arrive with the handshake before start()
+      // resolves; restarting there would reject the startup start().
+      const s = new StreamSupervisor();
+      s.setWatchedBuses(["A"], T0);
+      s.onConnectStarted(T0);
+      assert.equal(s.onServerError("errorcode", [1], T0 + 100), null);
+      assert.equal(s.status(T0 + 100).lastServerError.method, "errorcode");
+      // Once connected, a later refusal is acted on.
+      s.onConnected(T0 + 200, "startup");
+      assert.equal(s.onServerError("errorcode", [1], T0 + 300).reason, "server-error");
     });
 
     it("records the error but returns null with no watched buses", () => {

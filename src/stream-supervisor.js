@@ -20,12 +20,20 @@
  * Rules (each returns a reconnect Decision for index.js to act on):
  *   R1 runs-changed — the watched bus set gained a bus (none → some, or a substitute
  *      appearing). An identical set (the AM → PM switch on the same bus) or a shrink
- *      does not reconnect. Suppressed within MIN_RECONNECT_GAP_MS of a connect.
+ *      does not reconnect. Suppressed within MIN_RECONNECT_GAP_MS of a connect. A
+ *      roster change stays pending until a connection whose start() began after it
+ *      has connected, and check() re-issues it — so a change that arrives while
+ *      another (re)connect is already in flight, or inside the suppression window,
+ *      is retried rather than lost (frames from the other watched buses would
+ *      otherwise keep R2 satisfied while the new bus never streams).
  *   R2 watchdog — the watched set is non-empty and no watched-bus frame (accepted or
  *      dropped — the 5 s repeats are the liveness signal) has arrived for silenceMs
  *      since max(last watched frame, connect). Backed off per silent episode.
  *   R3 server-error — the server called `errorcode`/`error` while buses are watched.
  *      Shares R2's backoff so a server that keeps refusing can't cause a loop.
+ *      Ignored before the first connect: SignalR dispatches invocations that arrive
+ *      with the handshake before start() resolves, and restarting the startup
+ *      connection there would reject the initial start() (R2 covers it afterwards).
  *
  * Pure bookkeeping — no timers, no logging, no MQTT, no SignalR. The orchestrator
  * (index.js) feeds it events and a clock and performs the actions it returns, so
@@ -71,6 +79,13 @@ class StreamSupervisor {
     this._watched = new Set();
     this._connectedSinceMs = null;
     this._connectionReason = null;
+    // When the in-progress connect attempt began, and when the current connection's
+    // attempt began — a connection only reflects roster changes from before that.
+    this._attemptStartedMs = null;
+    this._connectionStartedMs = null;
+    // Time of the oldest roster change (watched set gained a bus) not yet covered
+    // by a connection started after it; null when none is pending.
+    this._rosterChangeMs = null;
     this._lastWatchedFrameMs = null;
     this._reconnects = 0;
     this._lastReconnectReason = null;
@@ -93,11 +108,27 @@ class StreamSupervisor {
   onConnected(nowMs, reason) {
     this._connectedSinceMs = nowMs;
     this._connectionReason = reason;
+    this._connectionStartedMs = this._attemptStartedMs ?? nowMs;
+    this._attemptStartedMs = null;
+    if (this._rosterChangeMs != null && this._connectionStartedMs >= this._rosterChangeMs) {
+      this._rosterChangeMs = null;
+    }
     if (reason !== "startup") {
       this._reconnects++;
       this._lastReconnectReason = reason;
       this._lastReconnectMs = nowMs;
     }
+  }
+
+  /**
+   * A connect attempt is about to call start() (every attempt, including startup
+   * and each retry of a backoff loop). Lets onConnected tell whether the resulting
+   * connection was made before or after a roster change.
+   *
+   * @param {number} nowMs
+   */
+  onConnectStarted(nowMs) {
+    this._attemptStartedMs = nowMs;
   }
 
   /**
@@ -126,6 +157,7 @@ class StreamSupervisor {
   onServerError(method, args, nowMs) {
     this._lastServerError = { method, args, atMs: nowMs };
     if (this._watched.size === 0) return null; // R1 reconnects once runs appear
+    if (this._connectedSinceMs == null) return null; // startup still in progress
     if (!this._backoffAllows(nowMs)) return null;
     return { reconnect: true, reason: "server-error", detail: { method, ...this._attemptDetail() } };
   }
@@ -145,28 +177,40 @@ class StreamSupervisor {
     if (next.size === 0) {
       // Nothing to supervise; a later silent episode starts from scratch.
       this._resetBackoff();
+      this._rosterChangeMs = null;
       return null;
     }
     const added = [...next].filter((b) => !prev.has(b));
     if (added.length === 0) return null;
-    // Not connected yet: the upcoming connect picks the new runs up by itself.
-    if (this._connectedSinceMs == null) return null;
+    if (this._rosterChangeMs == null) this._rosterChangeMs = nowMs;
+    const pending = this._pendingRunsChanged(nowMs);
+    return pending && { ...pending, detail: { ...pending.detail, previous: [...prev], added } };
+  }
+
+  // R1 decision for a pending roster change, or null when none is pending, there is
+  // no connection yet (the upcoming connect picks the new runs up by itself), or the
+  // current connection is younger than MIN_RECONNECT_GAP_MS.
+  _pendingRunsChanged(nowMs) {
+    if (this._rosterChangeMs == null || this._connectedSinceMs == null) return null;
     if (nowMs - this._connectedSinceMs < this.minReconnectGapMs) return null;
     return {
       reconnect: true,
       reason: "runs-changed",
-      detail: { previous: [...prev], next: [...next], added },
+      detail: { next: [...this._watched], pendingSinceMs: this._rosterChangeMs },
     };
   }
 
   /**
-   * Periodic check for a silent stream (R2).
+   * Periodic check: a still-pending roster change (R1, retried), else a silent
+   * stream (R2).
    *
    * @param {number} nowMs
    * @returns {Decision|null}
    */
   check(nowMs) {
     if (this._watched.size === 0 || this._connectedSinceMs == null) return null;
+    const pending = this._pendingRunsChanged(nowMs);
+    if (pending) return pending;
     const silentMs = nowMs - this._baselineMs();
     if (silentMs <= this.silenceMs) return null;
     if (!this._backoffAllows(nowMs)) return null;

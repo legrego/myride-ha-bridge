@@ -418,6 +418,7 @@ async function reconnectWithBackoff(reason) {
 // Build a fresh, negotiated connection and record it with the supervisor.
 async function connectSignalR(reason) {
   await ensureFreshToken();
+  streamSupervisor.onConnectStarted(Date.now());
   await signalrClient.restart(); // builds a brand-new HubConnection
   onStreamConnected(reason);
 }
@@ -430,6 +431,15 @@ function onStreamConnected(reason) {
     `watched=${watchedLabel(streamSupervisor.status(nowMs).watchedBuses)}`
   );
   publishStreamHealth(nowMs);
+}
+
+// Log context for a runs-changed decision: the set change from a roster poll, or a
+// change retried because it arrived during an earlier connect.
+function describeRunsChanged(detail) {
+  return detail.previous
+    ? `watched ${watchedLabel(detail.previous)} → ${watchedLabel(detail.next)}`
+    : `roster change at ${new Date(detail.pendingSinceMs).toISOString()} not covered by the current connection; ` +
+      `watched ${watchedLabel(detail.next)}`;
 }
 
 function watchedLabel(buses) {
@@ -543,12 +553,7 @@ async function main() {
     // the BUS_FILTER override is covered too.
     const watched = [...busToStudents.keys()].filter((bus) => !config.busFilter || bus === config.busFilter);
     const decision = streamSupervisor.setWatchedBuses(watched, Date.now());
-    if (decision) {
-      reconnectSignalR(
-        decision.reason,
-        `watched ${watchedLabel(decision.detail.previous)} → ${watchedLabel(decision.detail.next)}`
-      );
-    }
+    if (decision) reconnectSignalR(decision.reason, describeRunsChanged(decision.detail));
     // One-time migration: remove legacy per-bus entities from HA
     for (const bus of snapshot.activeBuses) {
       if (!clearedBuses.has(bus)) {
@@ -672,8 +677,19 @@ async function main() {
     reconnectSignalR("closed");
   });
 
-  await signalrClient.start();
-  onStreamConnected("startup");
+  // The startup connect is part of the single-flight reconnect coordination, so
+  // nothing (e.g. a server call dispatched with the handshake) can restart it
+  // mid-start and make this start() reject.
+  reconnectInFlight = (async () => {
+    streamSupervisor.onConnectStarted(Date.now());
+    await signalrClient.start();
+    onStreamConnected("startup");
+  })();
+  try {
+    await reconnectInFlight;
+  } finally {
+    reconnectInFlight = null;
+  }
 
   // Feed watchdog: flip feed_live OFF for students whose bus has gone silent, and
   // warn once per silence episode when it happens during the run's window (when the
@@ -699,10 +715,14 @@ async function main() {
     for (const summary of feedMonitor.flushDrops(nowMs)) logDropSummary(summary);
 
     // Stream watchdog: a run-day connection with no watched-bus frame for the
-    // silence window isn't being tracked by MyRide — reconnect (backed off).
+    // silence window isn't being tracked by MyRide — reconnect (backed off). Also
+    // retries a roster change the current connection was made too early to cover.
     const decision = streamSupervisor.check(nowMs);
     if (decision && !refreshTokenExpired && !reconnectInFlight) {
-      reconnectSignalR(decision.reason, describeWatchdog(decision.detail, nowMs));
+      reconnectSignalR(
+        decision.reason,
+        decision.reason === "watchdog" ? describeWatchdog(decision.detail, nowMs) : describeRunsChanged(decision.detail)
+      );
     }
     publishStreamHealth(nowMs);
   }, FEED_WATCHDOG_INTERVAL_MS);
