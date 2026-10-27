@@ -7,3 +7,7 @@ today's bus (including substitutes), and stop tracking: distance and stops away,
 an "approaching" sensor for automations, and a schedule-based predicted arrival.
 Everything arrives over MQTT with auto-discovery, through the Mosquitto broker
 add-on.
+
+Setup takes about five minutes: install, start, and paste a sign-in token from
+your MyRide browser session on the bridge's page. The **Documentation** tab walks
+you through it.

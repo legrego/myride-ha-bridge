@@ -1,6 +1,6 @@
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { CognitoAuth } = require("../src/cognito-auth");
+const { CognitoAuth, tenantIdsFromToken, resolveTenantId } = require("../src/cognito-auth");
 
 // Helper: build a fake JWT with a given payload
 function fakeJwt(payload) {
@@ -196,5 +196,61 @@ describe("CognitoAuth", () => {
 
       assert.equal(await auth.validate("bad-token"), false);
     });
+  });
+});
+
+describe("tenantIdsFromToken", () => {
+  const A = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+  const B = "11111111-2222-3333-4444-555555555555";
+
+  it("returns the UUID-shaped cognito:groups, keeping their case", () => {
+    const token = fakeJwt({ "cognito:groups": [A.toUpperCase(), "Parents", B] });
+    assert.deepEqual(tenantIdsFromToken(token), [A.toUpperCase(), B]);
+  });
+
+  it("returns [] without the claim or for an undecodable token", () => {
+    assert.deepEqual(tenantIdsFromToken(fakeJwt({ sub: "u" })), []);
+    assert.deepEqual(tenantIdsFromToken(fakeJwt({ "cognito:groups": "nope" })), []);
+    assert.deepEqual(tenantIdsFromToken("not-a-jwt"), []);
+    assert.deepEqual(tenantIdsFromToken(undefined), []);
+  });
+});
+
+describe("resolveTenantId", () => {
+  const A = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+  const B = "11111111-2222-3333-4444-555555555555";
+
+  it("uses the token's tenant when none is configured", () => {
+    const r = resolveTenantId(null, fakeJwt({ "cognito:groups": [A] }));
+    assert.equal(r.tenantId, A);
+    assert.equal(r.warning, null);
+  });
+
+  it("uses the first of several and warns", () => {
+    const r = resolveTenantId(null, fakeJwt({ "cognito:groups": [A, B] }));
+    assert.equal(r.tenantId, A);
+    assert.match(r.warning, /several tenant IDs/);
+  });
+
+  it("returns null when neither the config nor the token has one", () => {
+    assert.equal(resolveTenantId(null, fakeJwt({ sub: "u" })).tenantId, null);
+  });
+
+  it("prefers the configured tenant, case-insensitively matching the token", () => {
+    const r = resolveTenantId(A.toUpperCase(), fakeJwt({ "cognito:groups": [A] }));
+    assert.equal(r.tenantId, A.toUpperCase());
+    assert.equal(r.warning, null);
+  });
+
+  it("keeps the configured tenant but warns when the token disagrees", () => {
+    const r = resolveTenantId(B, fakeJwt({ "cognito:groups": [A] }));
+    assert.equal(r.tenantId, B);
+    assert.match(r.warning, /isn't in this token/);
+  });
+
+  it("keeps the configured tenant silently when the token has none", () => {
+    const r = resolveTenantId(B, fakeJwt({ sub: "u" }));
+    assert.equal(r.tenantId, B);
+    assert.equal(r.warning, null);
   });
 });

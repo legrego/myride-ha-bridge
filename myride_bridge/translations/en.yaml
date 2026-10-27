@@ -1,13 +1,15 @@
 configuration:
   tenant_id:
     name: Tenant ID
-    description: Your district's MyRide tenant (a UUID). capture-tokens.js prints it.
+    description: >-
+      Optional. Your district's MyRide ID (a UUID). The bridge reads it from your
+      refresh token, so set it only if the log says it couldn't find one.
   refresh_token:
     name: Refresh token
     description: >-
-      Cognito refresh token from capture-tokens.js. Keep it set. To replace an
-      expired token, paste the new one in the add-on's web UI, which then takes
-      precedence over this option.
+      Optional. Usually you paste the token on the School Bus page instead (see
+      the Documentation tab). A token pasted there takes precedence over this
+      option.
   timezone:
     name: District time zone
     description: >-

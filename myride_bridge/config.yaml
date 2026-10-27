@@ -1,6 +1,6 @@
 # https://contributors.home-assistant.io/apps/reference/configuration/
 name: MyRide Bus Bridge
-version: "1.1.1"
+version: "1.2.0"
 slug: myride_bridge
 description: Real-time MyRide K-12 school bus tracking via MQTT
 url: https://github.com/legrego/myride-ha-bridge/tree/main/myride_bridge
@@ -17,11 +17,10 @@ panel_icon: mdi:bus-school
 panel_title: School Bus
 watchdog: http://[HOST]:[PORT:8099]/status
 options:
-  tenant_id: null
   approach_radius_meters: 500
   log_level: info
 schema:
-  tenant_id: match(^[0-9a-fA-F-]{36}$)
+  tenant_id: match(^[0-9a-fA-F-]{36}$)?
   refresh_token: password?
   timezone: str?
   approach_radius_meters: int(1,)

@@ -1,9 +1,9 @@
 /**
  * startup.test.js
  *
- * Spawns the real bridge (src/index.js) with no token configured — a fresh
- * add-on install — and checks it serves the status page and waits for a token
- * instead of exiting.
+ * Spawns the real bridge (src/index.js) with nothing configured — a fresh
+ * add-on install, without a token or a tenant ID — and checks it serves the
+ * status page and waits for a token instead of exiting.
  */
 
 "use strict";
@@ -43,11 +43,11 @@ describe("startup with no token", { skip: hasDotEnv && "a .env file is present" 
     port = await freePort();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "myride-startup-"));
     const env = { ...process.env };
-    for (const key of ["MYRIDE_REFRESH_TOKEN", "MYRIDE_ACCESS_TOKEN", "SIMULATE", "SUPERVISOR_TOKEN", "MQTT_BROKER"]) {
+    // Nothing configured at all: the tenant ID is optional (read from the token).
+    for (const key of ["MYRIDE_REFRESH_TOKEN", "MYRIDE_ACCESS_TOKEN", "MYRIDE_TENANT_ID", "SIMULATE", "SUPERVISOR_TOKEN", "MQTT_BROKER"]) {
       delete env[key];
     }
     Object.assign(env, {
-      MYRIDE_TENANT_ID: "00000000-0000-0000-0000-000000000000",
       API_PORT: String(port),
       TOKEN_FILE: path.join(tmpDir, "refresh_token"),
     });

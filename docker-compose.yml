@@ -6,8 +6,8 @@ services:
 
     environment:
       # ── MyRide Authentication ──────────────────────────────────────────────
-      MYRIDE_REFRESH_TOKEN: ${MYRIDE_REFRESH_TOKEN}
-      MYRIDE_TENANT_ID: ${MYRIDE_TENANT_ID}
+      MYRIDE_REFRESH_TOKEN: ${MYRIDE_REFRESH_TOKEN:-}  # or submit it on the status page
+      MYRIDE_TENANT_ID: ${MYRIDE_TENANT_ID:-}  # optional: read from the token
       # MYRIDE_ACCESS_TOKEN: ${MYRIDE_ACCESS_TOKEN}  # fallback if no refresh token
 
       # ── MQTT Broker ────────────────────────────────────────────────────────

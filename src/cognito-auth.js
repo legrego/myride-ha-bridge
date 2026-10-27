@@ -129,4 +129,56 @@ class CognitoAuth {
   }
 }
 
-module.exports = { CognitoAuth };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The district tenant IDs a MyRide access token grants: the UUID-shaped entries
+ * of its `cognito:groups` claim, as written. Empty when the token can't be decoded
+ * or carries none.
+ * @param {string} accessToken — Cognito access token (JWT)
+ * @returns {string[]}
+ */
+function tenantIdsFromToken(accessToken) {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(String(accessToken).split(".")[1], "base64url").toString()
+    );
+    const groups = Array.isArray(payload["cognito:groups"]) ? payload["cognito:groups"] : [];
+    return groups.filter((g) => typeof g === "string" && UUID_RE.test(g));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pick the tenant ID to use: the configured one if set, else the first one in the
+ * access token. `warning` explains a choice the user may want to override.
+ * @param {string|null} configured — MYRIDE_TENANT_ID / the tenant_id option
+ * @param {string} accessToken
+ * @returns {{tenantId: string|null, fromToken: string[], warning: string|null}}
+ */
+function resolveTenantId(configured, accessToken) {
+  const fromToken = tenantIdsFromToken(accessToken);
+  if (configured) {
+    const mismatch = fromToken.length > 0 &&
+      !fromToken.some((t) => t.toLowerCase() === configured.toLowerCase());
+    return {
+      tenantId: configured,
+      fromToken,
+      warning: mismatch
+        ? `Configured tenant ID ${configured} isn't in this token (it has ${fromToken.join(", ")}). ` +
+          "Clear the tenant ID setting to use the token's."
+        : null,
+    };
+  }
+  return {
+    tenantId: fromToken[0] || null,
+    fromToken,
+    warning: fromToken.length > 1
+      ? `Token has several tenant IDs (${fromToken.join(", ")}); using the first. ` +
+        "Set the tenant ID to pick another."
+      : null,
+  };
+}
+
+module.exports = { CognitoAuth, tenantIdsFromToken, resolveTenantId };

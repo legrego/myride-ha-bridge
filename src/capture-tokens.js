@@ -5,7 +5,8 @@
  * 1. Log in to https://myridek12.tylerapp.com in Chrome
  * 2. Open DevTools (F12) → Console tab
  * 3. Paste this entire script and press Enter
- * 4. Copy the MYRIDE_REFRESH_TOKEN value into your .env file
+ * 4. Copy the refresh token it prints and paste it on the bridge's status page
+ *    (or set MYRIDE_REFRESH_TOKEN in .env)
  *
  * The refresh token is stored in sessionStorage under a key starting with
  * "oidc.user". The value is JSON containing a "refresh_token" property.
@@ -13,7 +14,7 @@
 
 (async function captureMyRideTokens() {
   const CLIENT_ID = "3c5382gsq7g13djnejo98p2d98";
-  const results = { accessToken: null, refreshToken: null, idToken: null, tenantId: null };
+  const results = { accessToken: null, refreshToken: null, idToken: null };
 
   console.log("%c🔍 Searching for MyRide K-12 Cognito tokens...", "font-size: 14px; font-weight: bold;");
 
@@ -67,43 +68,33 @@
     }
   }
 
-  // ─── Extract tenant ID from access token ───
-  if (results.accessToken && !results.tenantId) {
-    const payload = decodeJwt(results.accessToken);
-    if (payload) {
-      results.tenantId = (payload["cognito:groups"] || [])[0];
-    }
-  }
-
   // ─── Output results ───
   console.log("\n%c═══ MyRide K-12 Token Capture Results ═══", "font-size: 14px; font-weight: bold; color: #2196F3;");
 
   if (results.refreshToken) {
-    console.log("%c✅ REFRESH TOKEN FOUND", "color: green; font-weight: bold;");
-    console.log("Add this to your .env file:");
+    console.log("%c✅ REFRESH TOKEN", "color: green; font-weight: bold;");
+    console.log(`\n${results.refreshToken}\n`);
+    // copy() is the DevTools console's clipboard helper (Chrome, Edge, Firefox).
+    let copied = false;
+    try {
+      if (typeof copy === "function") { copy(results.refreshToken); copied = true; }
+    } catch { /* not in a DevTools console */ }
+    console.log(copied
+      ? "%cCopied to your clipboard. Paste it on the bridge's status page (School Bus in the\nHome Assistant sidebar) and select Submit Token."
+      : "%cCopy it and paste it on the bridge's status page (School Bus in the\nHome Assistant sidebar) and select Submit Token.", "font-weight: bold;");
+    console.log("\n%cNot using the Home Assistant app? You can put it in your .env file:", "font-weight: bold;");
     console.log(`\nMYRIDE_REFRESH_TOKEN=${results.refreshToken}\n`);
-    console.log("%cOr send it directly to your running bridge:", "font-weight: bold;");
+    console.log("Or send a new token to a running bridge:");
     console.log(`\ncurl -X POST http://YOUR_BRIDGE_HOST:8099/token -d '${results.refreshToken}'\n`);
   } else {
     console.log("%c⚠️  No refresh token found in browser storage.", "color: orange; font-weight: bold;");
-    console.log("Try the Network tab method described in the README.");
-  }
-
-  if (results.accessToken) {
-    console.log("%c✅ ACCESS TOKEN FOUND", "color: green; font-weight: bold;");
-    const payload = decodeJwt(results.accessToken);
-    if (payload) {
-      const exp = new Date(payload.exp * 1000);
-      console.log(`  Expires: ${exp.toLocaleString()}`);
-      console.log(`  Username: ${payload.username}`);
+    console.log("Try the Network tab method below.");
+    if (results.accessToken) {
+      const payload = decodeJwt(results.accessToken);
+      const exp = payload ? `, expires ${new Date(payload.exp * 1000).toLocaleString()}` : "";
+      console.log(`\nOutside the app, this short-lived access token also works in .env${exp}:`);
+      console.log(`MYRIDE_ACCESS_TOKEN=${results.accessToken}\n`);
     }
-    console.log(`\n# You can also use this directly (expires in ~60min):`);
-    console.log(`MYRIDE_ACCESS_TOKEN=${results.accessToken}\n`);
-  }
-
-  if (results.tenantId) {
-    console.log(`%c✅ TENANT ID: ${results.tenantId}`, "color: green;");
-    console.log(`\nMYRIDE_TENANT_ID=${results.tenantId}\n`);
   }
 
   if (!results.refreshToken) {
@@ -112,7 +103,7 @@
     console.log("2. Log OUT of MyRide, then log back IN");
     console.log("3. In the Network filter, search for 'token'");
     console.log("4. Look for a response containing 'refresh_token'");
-    console.log("5. Copy that value into your .env as MYRIDE_REFRESH_TOKEN");
+    console.log("5. Copy that value; it's your refresh token");
   }
 
   return results;

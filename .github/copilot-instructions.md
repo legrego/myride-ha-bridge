@@ -66,7 +66,7 @@ Bus IDs are sanitized via `_sanitizeId()`: `"BUS 042"` → `"bus_042"`.
 | Variable | Required | Description |
 |---|---|---|
 | `MYRIDE_REFRESH_TOKEN` | Yes (or ACCESS_TOKEN) | Cognito refresh token |
-| `MYRIDE_TENANT_ID` | Yes | District UUID |
+| `MYRIDE_TENANT_ID` | No | District UUID (read from the access token's `cognito:groups` when unset) |
 | `COGNITO_CLIENT_ID` | No | Default: `3c5382gsq7g13djnejo98p2d98` |
 | `MQTT_BROKER` | Yes | e.g. `homeassistant.local` |
 | `MQTT_PORT` | No | Default `1883` |
