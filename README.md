@@ -303,9 +303,14 @@ Needs Node.js 22 or later.
 git clone https://github.com/legrego/myride-ha-bridge.git
 cd myride-ha-bridge
 npm install
-cp .env.example .env   # then fill it in, as for Docker Compose
+cp .env.example .env
 npm start
 ```
+
+In `.env`, set your MQTT broker as for Docker Compose, and change `TOKEN_FILE` to
+`./data/refresh_token`: the default `/data` is the Docker volume, which a normal user
+usually can't write to, and the token you submit on the status page is saved there.
+Then submit your token at `http://localhost:8099` ([step 3](#step-3-connect-your-myride-account)).
 
 <details>
 <summary>Run it as a systemd service</summary>
@@ -331,7 +336,11 @@ EnvironmentFile=/opt/myride-ha-bridge/.env
 WantedBy=multi-user.target
 ```
 
+With `TOKEN_FILE=./data/refresh_token`, the token is saved in
+`/opt/myride-ha-bridge/data`, so give the service user that folder:
+
 ```bash
+sudo install -d -o homeassistant /opt/myride-ha-bridge/data
 sudo systemctl enable --now myride-bridge
 sudo journalctl -u myride-bridge -f
 ```
