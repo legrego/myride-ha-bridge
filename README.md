@@ -15,8 +15,8 @@ You need:
   Container or Core, which can't run apps, see [Other ways to run](#other-ways-to-run).
 - A **MyRide K-12 account**, the one you use on
   [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
-- A **computer** with Chrome, Edge or Firefox, used once to copy two values out of
-  MyRide. A phone won't work for this step.
+- A **computer** with Chrome, Edge or Firefox, used once to copy a sign-in token out
+  of MyRide. A phone won't work for this step.
 
 ### Step 1: Install the MQTT broker
 
@@ -30,57 +30,54 @@ Skip this step if you already use the **Mosquitto broker** app.
 
 The bridge finds the broker by itself, so you never type any MQTT settings.
 
-### Step 2: Install the MyRide Bus Bridge app
+### Step 2: Install and start the MyRide Bus Bridge app
 
 [![Open the MyRide Bus Bridge app in your Home Assistant.](https://my.home-assistant.io/badges/supervisor_addon.svg)](https://my.home-assistant.io/redirect/supervisor_addon/?addon=ae2231fb_myride_bridge&repository_url=https%3A%2F%2Fgithub.com%2Flegrego%2Fmyride-ha-bridge)
 
-Select the button above. If Home Assistant asks to add the repository, select **Add**.
-Then select **Install**. Don't start it yet.
+1. Select the button above. If Home Assistant asks to add the repository, select
+   **Add**.
+2. Select **Install**.
+3. Turn on **Show in sidebar** and **Watchdog**, then select **Start**.
+
+There's nothing to configure.
 
 <details>
-<summary>Doing it by hand instead</summary>
+<summary>Adding the app by hand instead</summary>
 
 1. Go to **Settings → Apps → Install app**.
 2. Open the **⋮** menu (top right), then **Repositories**.
 3. Paste `https://github.com/legrego/myride-ha-bridge`, then select **Add** and close
    the dialog.
 4. Find **MyRide Bus Bridge** in the list (you may need to refresh the page) and select
-   **Install**.
+   it.
 
 </details>
 
-### Step 3: Get your tenant ID and refresh token
+### Step 3: Connect your MyRide account
 
 MyRide doesn't let other programs sign in with your email and password, so you copy a
-sign-in token from your browser once. It takes about a minute.
+sign-in token from your browser once. It takes about a minute, on your computer.
 
-1. On your computer, sign in at [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
-2. Open the [token snippet](https://raw.githubusercontent.com/legrego/myride-ha-bridge/main/src/capture-tokens.js)
-   in a new tab, select all of it (**Ctrl+A** / **⌘A**) and copy it.
-3. Go back to the MyRide tab and press **F12** (on a Mac, **⌥⌘J** in Chrome or Edge,
-   **⌥⌘K** in Firefox) to open the developer tools. Select the **Console** tab.
-4. Paste the snippet and press **Enter**.
-   If the browser says pasting isn't allowed, type `allow pasting`, press **Enter**,
-   and paste again.
-
-The console prints your **Tenant ID** (identifies your school district) and your
-**Refresh token** (a long string, starting with `eyJ`). Keep the tab open for the next
-step.
+1. In Home Assistant, open **School Bus** in the sidebar. It asks for a refresh token
+   and shows a snippet under **How do I get a refresh token?**. Select
+   **Copy to clipboard**.
+2. In a new tab, sign in at [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
+3. Press **F12** (on a Mac, **⌥⌘J** in Chrome or Edge, **⌥⌘K** in Firefox) to open the
+   developer tools, and select the **Console** tab.
+4. Paste the snippet and press **Enter**. If the browser says pasting isn't allowed,
+   type `allow pasting`, press **Enter**, and paste again.
+5. The snippet prints your **refresh token** (a long string starting with `eyJ`) and
+   copies it to your clipboard.
+6. Go back to the **School Bus** page, paste the token into the box and select
+   **Submit Token**.
 
 > The refresh token is a sign-in credential for your MyRide account. Don't share it.
 > It lasts about 30 days; see [When the token expires](#when-the-token-expires).
 
-### Step 4: Configure and start
+### Step 4: Check that it works
 
-1. In the app's **Configuration** tab, paste the **Tenant ID** and the
-   **Refresh token** into the matching fields, then select **Save**.
-2. In the **Info** tab, turn on **Show in sidebar** and **Watchdog**, then select
-   **Start**.
-
-### Step 5: Check that it works
-
-- Open **School Bus** in the sidebar. **MyRide K-12**, **MQTT** and **Credentials**
-  should all show green within a few seconds.
+- On the **School Bus** page, **MyRide K-12**, **MQTT** and **Credentials** should all
+  show green within a few seconds.
 - Go to **Settings → Devices & services → MQTT**. Each student linked to your MyRide
   account is now a device, named after the student.
 
@@ -91,15 +88,10 @@ the map pin stays where the bus last parked.
 
 The refresh token lasts about 30 days. When it expires the bridge keeps running, and
 `binary_sensor.myride_bridge_credentials` turns **on** (you can
-[get a notification](#token-expired)). To fix it:
-
-1. Repeat [step 3](#step-3-get-your-tenant-id-and-refresh-token) to get a new refresh
-   token (the tenant ID doesn't change).
-2. Open **School Bus** in the sidebar, expand **Token Management**, paste the token and
-   select **Submit Token**.
-
-The bridge starts streaming again within seconds, with no restart. It saves the token
-you submitted and uses it from then on, ahead of the **Refresh token** option.
+[get a notification](#token-expired)). To fix it, repeat
+[step 3](#step-3-connect-your-myride-account). The snippet is under **Token
+Management → How do I get a refresh token?**. The bridge starts streaming again
+within seconds, with no restart.
 
 ## What you get
 
@@ -138,12 +130,12 @@ For a student with ID `1234567` you get:
 
 ### App options
 
-All optional except the tenant ID.
+None are needed for a normal setup.
 
 | Option | Description |
 |--------|-------------|
-| Tenant ID | Your district's ID, from step 3 (required) |
-| Refresh token | Your MyRide sign-in token, from step 3. A token submitted on the status page replaces it |
+| Tenant ID | Your district's MyRide ID. Read from your token; set it only if the log says it couldn't find one |
+| Refresh token | Another way to give the bridge your token. Once you submit a token on the status page, that one is used instead |
 | District time zone | Used to tell the AM run from the PM run. Leave empty to use your Home Assistant time zone |
 | Approach radius | Distance in meters at which "Approaching Stop" turns on (default 500) |
 | Bus filter | Track only this bus, such as `BUS 042`. Leave empty to follow each student's bus automatically |
@@ -229,8 +221,13 @@ hours_to_show: 0
 Start with the app's **Log** tab. Every line has a timestamp.
 
 ### The app won't start
-Check that the **Tenant ID** is filled in on the **Configuration** tab, and that the
-Mosquitto broker app is installed and running.
+Check that the Mosquitto broker app is installed and running.
+
+### "Couldn't find your district's tenant ID"
+The bridge normally reads your district's ID from your MyRide token. If it can't, set
+**Tenant ID** on the app's **Configuration** tab. To find it, sign in to MyRide with
+the developer tools open on the **Network** tab: requests to
+`myridek12.tylerapi.com` carry it in an `x-tenant-id` header.
 
 ### Credentials show "Expired" or "Missing"
 The refresh token has expired, or none was set. Follow
@@ -290,13 +287,12 @@ that Home Assistant uses.
 
 1. Download [`docker-compose.yml`](./docker-compose.yml) and
    [`.env.example`](./.env.example) into a folder, and rename `.env.example` to `.env`.
-2. In `.env`, set `MYRIDE_TENANT_ID` and `MYRIDE_REFRESH_TOKEN` (from
-   [step 3](#step-3-get-your-tenant-id-and-refresh-token)) and your broker's
-   `MQTT_BROKER`, `MQTT_USERNAME` and `MQTT_PASSWORD`.
+2. In `.env`, set your broker's `MQTT_BROKER`, `MQTT_USERNAME` and `MQTT_PASSWORD`.
 3. Run `docker compose up -d`.
+4. Open the status page at `http://YOUR_HOST:8099` and follow
+   [step 3](#step-3-connect-your-myride-account) to submit your refresh token.
 
-The status page is at `http://YOUR_HOST:8099`. The `/data` volume keeps a token you
-submitted there across container recreates. You can also submit a new token with
+The `/data` volume keeps the token you submitted across container recreates. You can also submit a new token with
 `curl -X POST http://YOUR_HOST:8099/token -d 'NEW_REFRESH_TOKEN'`.
 
 ### Node.js
@@ -348,8 +344,8 @@ Outside the app, the bridge is configured with environment variables (or `.env`)
 
 | Variable | Description |
 |----------|-------------|
-| `MYRIDE_TENANT_ID` | District ID, from step 3 (required) |
-| `MYRIDE_REFRESH_TOKEN` | Refresh token, from step 3 |
+| `MYRIDE_REFRESH_TOKEN` | Refresh token, from step 3 (or submit it on the status page) |
+| `MYRIDE_TENANT_ID` | District ID. Optional: read from the token when unset |
 | `MQTT_BROKER`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD` | Your MQTT broker |
 | `TZ` | District time zone (default `America/New_York`) |
 | `BUS_FILTER` | Track only this bus, such as `BUS 042` |

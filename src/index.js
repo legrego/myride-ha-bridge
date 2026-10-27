@@ -47,7 +47,7 @@ if (isAddon) {
   applyAddonOptions();
 }
 
-const { CognitoAuth } = require("./cognito-auth");
+const { CognitoAuth, resolveTenantId } = require("./cognito-auth");
 const { MyRideSignalRClient } = require("./signalr-client");
 const { MqttBridge, truncateJson } = require("./mqtt-bridge");
 const { ApiServer } = require("./api-server");
@@ -118,13 +118,6 @@ if (process.env.SIMULATE === "true") {
   return; // module-level: skip the rest of the file
 }
 
-// ─── Validation ──────────────────────────────────────────────────
-if (!config.myride.tenantId) {
-  console.error("ERROR: MYRIDE_TENANT_ID is required. Set it in your .env file.");
-  console.error("Run capture-tokens.js in the browser — it prints your tenant ID.");
-  process.exit(1);
-}
-
 // No token is not fatal: the status page is the way to supply one (as an add-on it's
 // the only way short of editing the options), so the bridge serves it and waits —
 // handleNewToken() starts the data side once POST /token delivers a valid token.
@@ -140,10 +133,10 @@ if (tokenMissing) {
   console.error("  2. Open DevTools (F12) → Console tab");
   console.error("  3. Paste the contents of capture-tokens.js and press Enter");
   if (isAddon) {
-    console.error("  4. Open the add-on's Web UI and paste the MYRIDE_REFRESH_TOKEN");
-    console.error("     value under Token Management (or set the refresh_token option)");
+    console.error("  4. Open the app's Web UI and paste the refresh token under");
+    console.error("     Token Management (or set the refresh_token option)");
   } else {
-    console.error(`  4. Paste the MYRIDE_REFRESH_TOKEN value on the status page`);
+    console.error(`  4. Paste the refresh token on the status page`);
     console.error(`     (port ${config.api.port}), or set it in your .env file and restart`);
     console.error();
     console.error("If the capture script can't find a refresh token, you can set");
@@ -240,6 +233,23 @@ async function ensureFreshToken() {
   throw new Error("No valid token available.");
 }
 
+// ─── Tenant ID ───────────────────────────────────────────────────
+// The district's tenant ID is optional: the access token's cognito:groups carry it.
+// config.myride.tenantId holds the one in use once the data side has started.
+const configuredTenantId = config.myride.tenantId;
+const TENANT_NOT_FOUND =
+  "Couldn't find your district's tenant ID in the MyRide token. " +
+  "Set it yourself: the app's Tenant ID option, or MYRIDE_TENANT_ID.";
+
+/** Settle config.myride.tenantId from the configuration or the access token. */
+function applyTenantId(accessToken) {
+  const { tenantId, warning } = resolveTenantId(configuredTenantId, accessToken);
+  if (warning) console.warn(`[Auth] ${warning}`);
+  if (!tenantId) throw new Error(TENANT_NOT_FOUND);
+  if (!configuredTenantId) console.log(`[Auth] Tenant ID from token: ${tenantId}`);
+  config.myride.tenantId = tenantId;
+}
+
 // ─── Token expiry handler ───────────────────────────────────────
 // References set by main() so handleTokenExpired can tear down gracefully
 let mqttBridge = null;
@@ -330,6 +340,17 @@ async function handleNewToken(newRefreshToken) {
 
   // Validate by attempting a refresh
   const tokens = await auth.refresh(newRefreshToken);
+
+  // The running clients keep the tenant they were built with.
+  const { tenantId, warning } = resolveTenantId(configuredTenantId, tokens.accessToken);
+  if (warning) console.warn(`[Auth] ${warning}`);
+  if (!tenantId) throw new Error(TENANT_NOT_FOUND);
+  if (config.myride.tenantId && tenantId !== config.myride.tenantId) {
+    console.warn(
+      `[Auth] New token is for tenant ${tenantId}, but the bridge is using ` +
+      `${config.myride.tenantId}. Restart the bridge to switch.`
+    );
+  }
 
   // Success — swap in the new token
   config.myride.refreshToken = newRefreshToken;
@@ -575,8 +596,8 @@ async function startBridge() {
     `[Auth] Mode: ${config.myride.refreshToken ? "refresh token (auto-renewing)" : "static access token"}`
   );
 
-  // Step 1: Get an initial access token
-  await ensureFreshToken();
+  // Step 1: Get an initial access token, and the tenant ID it carries
+  applyTenantId(await ensureFreshToken());
 
   // Step 2: Set up MQTT bridge (as an add-on, default to the Supervisor's broker)
   if (isAddon && !config.mqtt.broker) {

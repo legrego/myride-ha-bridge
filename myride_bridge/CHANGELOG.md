@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+### Changed
+
+- The tenant ID is now optional. The bridge reads it from your MyRide sign-in
+  token, so setup only needs the refresh token, pasted on the status page.
+- On a fresh install the status page opens the token instructions and snippet
+  right away, and the snippet copies the refresh token to your clipboard.
+
 ## 1.1.1
 
 ### Fixed

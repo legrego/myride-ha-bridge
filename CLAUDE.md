@@ -21,7 +21,7 @@ docker build --build-arg IMAGE_FLAVOR=addon .  # Home Assistant add-on image, ro
 
 Copy `.env.example` to `.env`. Key variables:
 - `MYRIDE_REFRESH_TOKEN` — Cognito refresh token (captured via `capture-tokens.js` browser snippet)
-- `MYRIDE_TENANT_ID` — District UUID extracted from JWT
+- `MYRIDE_TENANT_ID` — Optional district UUID. When unset, `startBridge()` takes it from the access token's `cognito:groups` (`resolveTenantId()` in `cognito-auth.js`; first UUID-shaped group, warning if several or if a configured ID isn't in the token), and `handleNewToken()` rejects a token that yields none. Running clients keep the tenant they were built with, so a token for another district needs a restart
 - `COGNITO_CLIENT_ID` — Shared value: `3c5382gsq7g13djnejo98p2d98`
 - `MQTT_BROKER`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`
 - `BUS_FILTER` — Optional single-bus filter (e.g., `BUS 042`)

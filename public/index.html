@@ -557,6 +557,7 @@
     let lastBuses = [];
     let lastTokenExpiresAt = null;
     let lastTokenExpired = false;
+    let snippetShownForSetup = false;
 
     function formatTokenExpiry(expiresAt, tokenExpired) {
       const el = $('s-expires');
@@ -669,6 +670,11 @@
         formatTokenExpiry(s.tokenExpiresAt, s.tokenExpired);
         $('last-refresh').textContent = 'Last updated ' + new Date().toLocaleTimeString();
         if (needsToken) $('token-sections').open = true;
+        // First run: show how to get a token too (once, so it can be closed).
+        if (s.tokenMissing && !snippetShownForSetup) {
+          snippetShownForSetup = true;
+          document.querySelector('details.snippet-card').open = true;
+        }
         renderBuses(s.buses || []);
       } catch {
         $('last-refresh').textContent = 'Status unavailable';

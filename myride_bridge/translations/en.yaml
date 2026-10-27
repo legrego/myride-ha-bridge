@@ -1,13 +1,14 @@
 configuration:
   tenant_id:
     name: Tenant ID
-    description: Your district's MyRide ID. The token snippet prints it (see the Documentation tab).
+    description: >-
+      Optional. Your district's MyRide ID (a UUID). The bridge reads it from your
+      refresh token, so set it only if the log says it couldn't find one.
   refresh_token:
     name: Refresh token
     description: >-
-      Your MyRide sign-in token. The token snippet prints it (see the
-      Documentation tab). Keep it set. To replace an expired token, paste the new
-      one on the School Bus status page, which then takes precedence over this
+      Optional. Usually you paste the token on the School Bus page instead (see
+      the Documentation tab). A token pasted there takes precedence over this
       option.
   timezone:
     name: District time zone
