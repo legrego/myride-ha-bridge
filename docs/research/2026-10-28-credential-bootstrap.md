@@ -49,6 +49,8 @@ curl -sS https://cognito-idp.us-east-1.amazonaws.com/ \
 - `NotAuthorizedException` with credentials that are definitely correct → the account is federated. Go to Option B.
 - `ChallengeName` (for example `NEW_PASSWORD_REQUIRED` or an MFA challenge) → Option A works but needs challenge handling. Without that, users with a challenge fall back to B or C.
 
+**Result (2026-10-28, one real parent account):** `hasRefresh: true`, with no challenge. Email + password login works for this account, so Option A is viable.
+
 You can also check the decoded access token for a `cognito:groups` entry named `us-east-1_sfRczsC0e_<Provider>`. Cognito adds every federated user to such a group automatically.
 
 ## Options, ranked
@@ -102,9 +104,9 @@ Instead of a console paste, the status page shows a **"drag to bookmarks bar"** 
 
 ## Recommendation
 
-1. Run the decisive test above with a real account.
-2. If it passes, build **A**, with the token form (and **C**) as the fallback.
-3. If it fails because accounts are federated, capture one HAR of the web login and build **B**, plus **C** for desktop users.
-4. Either way, fix the README and the `cognito-auth.js` header. "SRP disabled" is right; "USER_PASSWORD_AUTH disabled" is not, at the client level.
+1. ~~Run the decisive test above with a real account.~~ Passed (see the result above).
+2. Build **A**, with the token form (and **C**) as the fallback.
+3. Keep **B** in reserve, in case other districts' accounts turn out to be federated or Tyler turns the flow off.
+4. Fix the README and the `cognito-auth.js` header. "SRP disabled" is right; "USER_PASSWORD_AUTH disabled" is not, at the client level.
 
 Side note for whichever option ships: Cognito now offers refresh-token rotation (`GetTokensFromRefreshToken`, which the pool already answers). If Tyler enables rotation, `REFRESH_TOKEN_AUTH` stops working and the bridge would have to persist each new refresh token. Watch for it, but there is nothing to do now.
