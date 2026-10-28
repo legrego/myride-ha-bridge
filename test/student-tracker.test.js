@@ -241,6 +241,41 @@ describe("normalizeStudent()", () => {
     assert.equal(s.todaysRuns[1].runId, 2);
   });
 
+  it("carries each run's own-stop time in todaysRuns, not just the current run's", () => {
+    // Half day: the PM run's stops move to 11:45 (school) → 12:14 (home) while the
+    // AM run is still current, and the home stop is picked by distance to home.
+    const home = { latitude: 41.53, longitude: -72.0 };
+    const school = { stopLat: 41.6, stopLong: -72.1 };
+    const s = normalizeStudent(
+      {
+        uniqueId: 1,
+        homeAddress: home,
+        runInfo: [
+          {
+            runId: 1,
+            stopsInfo: [
+              { stopTime: "1900-01-01T09:02:08", actionType: "Pickup", stopLat: home.latitude, stopLong: home.longitude },
+              { stopTime: "1900-01-01T09:10:00", actionType: "Dropoff", ...school },
+            ],
+          },
+          {
+            runId: 2,
+            stopsInfo: [
+              { stopTime: "1900-01-01T11:45:00", actionType: "Pickup", ...school },
+              { stopTime: "1900-01-01T12:14:00", actionType: "Dropoff", stopLat: home.latitude, stopLong: home.longitude },
+            ],
+          },
+        ],
+      },
+      9 * 60 + 8
+    );
+    assert.equal(s.currentRun.runId, 1);
+    assert.equal(s.todaysRuns[0].myStopAction, "Pickup");
+    assert.equal(s.todaysRuns[0].myStopTimeMinutes, 9 * 60 + 2);
+    assert.equal(s.todaysRuns[1].myStopAction, "Dropoff");
+    assert.equal(s.todaysRuns[1].myStopTimeMinutes, 12 * 60 + 14);
+  });
+
   it("returns null currentRun for empty runInfo", () => {
     const s = normalizeStudent({ uniqueId: "1", firstName: "A", lastName: "B", runInfo: [] }, 0);
     assert.equal(s.currentRun, null);

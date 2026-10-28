@@ -31,6 +31,7 @@ const {
   nowMinutesInTimeZone,
   districtLocalTimestamp,
   districtLocalDate,
+  formatMinutes,
   DEFAULT_TIME_ZONE,
 } = require("./student-tracker");
 const { version } = require("./version");
@@ -932,9 +933,16 @@ class MqttBridge {
         run_id: currentRun.runId,
         todays_runs: todaysRuns.map((r) => ({
           run_id: r.runId,
+          current: r.runId === currentRun.runId,
           regular_bus: r.busNumber,
           active_bus: r.activeVehicle,
           is_substitute: r.isSubstitute,
+          // District-local HH:MM from today's /api/student poll, so a changed
+          // schedule (half day, delayed opening) shows before its run is current.
+          window_start: formatMinutes(r.windowStart),
+          window_end: formatMinutes(r.windowEnd),
+          my_stop_action: r.myStopAction || null,
+          my_stop_time: formatMinutes(r.myStopTimeMinutes),
         })),
       }),
       { retain: true }

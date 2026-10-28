@@ -260,8 +260,10 @@ describe("MqttBridge", () => {
         windowEnd: 550,
       },
       todaysRuns: [
-        { runId: 147, busNumber: "BUS 012", activeVehicle: "BUS 057", isSubstitute: true },
-        { runId: 154, busNumber: "BUS 012", activeVehicle: "BUS 012", isSubstitute: false },
+        { runId: 147, busNumber: "BUS 012", activeVehicle: "BUS 057", isSubstitute: true,
+          windowStart: 525, windowEnd: 550, myStopAction: "Pickup", myStopTimeMinutes: 542 },
+        { runId: 154, busNumber: "BUS 012", activeVehicle: "BUS 012", isSubstitute: false,
+          windowStart: 705, windowEnd: 734, myStopAction: "Dropoff", myStopTimeMinutes: 734 },
       ],
       ...overrides,
     });
@@ -367,6 +369,24 @@ describe("MqttBridge", () => {
       const attrs = JSON.parse(attrCall[1]);
       assert.equal(Array.isArray(attrs.todays_runs), true);
       assert.equal(attrs.todays_runs.length, 2);
+    });
+
+    it("todays_runs carries each run's window and own-stop time", () => {
+      publishCalls.length = 0;
+      bridge.publishStudent(makeStudent());
+
+      const attrCall = publishCalls.find((c) => c[0] === "myride/student/1234567/attributes");
+      const [am, pm] = JSON.parse(attrCall[1]).todays_runs;
+      assert.deepEqual(
+        { current: am.current, window_start: am.window_start, window_end: am.window_end,
+          my_stop_action: am.my_stop_action, my_stop_time: am.my_stop_time },
+        { current: true, window_start: "08:45", window_end: "09:10", my_stop_action: "Pickup", my_stop_time: "09:02" }
+      );
+      assert.deepEqual(
+        { current: pm.current, window_start: pm.window_start, window_end: pm.window_end,
+          my_stop_action: pm.my_stop_action, my_stop_time: pm.my_stop_time },
+        { current: false, window_start: "11:45", window_end: "12:14", my_stop_action: "Dropoff", my_stop_time: "12:14" }
+      );
     });
 
     it("skips when uniqueId is missing", () => {

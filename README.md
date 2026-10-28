@@ -267,7 +267,9 @@ stop-time window matches the current time of day. Those stop times are in the
 **district's local time**, so a wrong time zone can push "now" outside the right
 window and select the wrong run. Set **District time zone** (or `TZ` outside the app)
 to your district's time zone and restart. The `sensor.myride_student_<id>_bus`
-entity's `todays_runs` attribute lists every run and which one is currently active.
+entity's `todays_runs` attribute lists every run and which one is currently active
+(`current`), with each run's `window_start`/`window_end` and the student's own
+`my_stop_time`/`my_stop_action`.
 
 ### "Connection closed with an error" + reconnect
 Normal. The MyRide server has an idle timeout, and the bridge reconnects with
