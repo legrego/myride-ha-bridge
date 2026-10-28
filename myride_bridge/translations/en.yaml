@@ -1,15 +1,25 @@
 configuration:
+  myride_email:
+    name: MyRide email
+    description: >-
+      The email (or username) you use to sign in to MyRide K-12. With the
+      password set, the app signs in itself and you don't need a refresh token.
+  myride_password:
+    name: MyRide password
+    description: >-
+      Your MyRide K-12 password. Stored on your Home Assistant host with the
+      app's other settings.
   tenant_id:
     name: Tenant ID
     description: >-
       Optional. Your district's MyRide ID (a UUID). The bridge reads it from your
-      refresh token, so set it only if the log says it couldn't find one.
+      MyRide sign-in, so set it only if the log says it couldn't find one.
   refresh_token:
     name: Refresh token
     description: >-
-      Optional. Usually you paste the token on the School Bus page instead (see
-      the Documentation tab). A token pasted there takes precedence over this
-      option.
+      Optional. Not needed when the MyRide email and password are set. Otherwise
+      you usually paste the token on the School Bus page instead (see the
+      Documentation tab). A token pasted there takes precedence over this option.
   timezone:
     name: District time zone
     description: >-

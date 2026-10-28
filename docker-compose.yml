@@ -6,7 +6,9 @@ services:
 
     environment:
       # ── MyRide Authentication ──────────────────────────────────────────────
-      MYRIDE_REFRESH_TOKEN: ${MYRIDE_REFRESH_TOKEN:-}  # or submit it on the status page
+      MYRIDE_EMAIL: ${MYRIDE_EMAIL:-}  # your MyRide login: the bridge signs in itself
+      MYRIDE_PASSWORD: ${MYRIDE_PASSWORD:-}
+      MYRIDE_REFRESH_TOKEN: ${MYRIDE_REFRESH_TOKEN:-}  # or a token instead (or submit it on the status page)
       MYRIDE_TENANT_ID: ${MYRIDE_TENANT_ID:-}  # optional: read from the token
       # MYRIDE_ACCESS_TOKEN: ${MYRIDE_ACCESS_TOKEN}  # fallback if no refresh token
 

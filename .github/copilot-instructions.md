@@ -8,7 +8,7 @@ A Node.js bridge that streams real-time school bus GPS data from Tyler Technolog
 
 ```
 src/index.js          Orchestrator — wires all modules, manages lifecycle
-src/cognito-auth.js   Cognito REFRESH_TOKEN_AUTH via plain fetch (no SDK)
+src/cognito-auth.js   Cognito USER_PASSWORD_AUTH sign-in + REFRESH_TOKEN_AUTH via plain fetch (no SDK); PasswordLogin lockout guard
 src/myride-api.js     MyRide REST wrapper — GET /api/student with Bearer auth
 src/signalr-client.js SignalR EventEmitter — connects to LiveVehicleHub, emits 'location'
 src/mqtt-bridge.js    Publishes HA MQTT Discovery configs + state topics
@@ -23,7 +23,7 @@ src/simulator.js      SIMULATE=true mode — fake buses + fake student with subs
 - **No `dotenv` package** — `.env` is parsed manually in `src/index.js` (env vars take precedence over file).
 - **`busFilter` in `MyRideSignalRClient`** accepts either a string (exact match) or a predicate function `(id) => boolean`. String form is the legacy `BUS_FILTER` env var override; function form is driven by `StudentTracker`.
 - **`StudentTracker` drives the SignalR filter** — polls `/api/student`, computes the union of all `activeVehicle` values across every student's runs for today, and updates the live `allowedBuses` Set. `BUS_FILTER` env var bypasses this when set.
-- **Token expiry** is a first-class lifecycle state: `refreshTokenExpired=true` stops SignalR and the student tracker, publishes a `binary_sensor` problem to HA, and idles waiting for a new token via `POST /token`.
+- **Token expiry** is a first-class lifecycle state: `refreshTokenExpired=true` stops SignalR and the student tracker, publishes a `binary_sensor` problem to HA, and idles waiting for a new token via `POST /token`. With `MYRIDE_EMAIL`/`MYRIDE_PASSWORD` set, `renewAccessToken()` signs in again first and only idles if MyRide rejects them; `PasswordLogin` then refuses to retry them (account lockout) until a token is submitted or the process restarts.
 - **No `withAutomaticReconnect()`** on the SignalR connection — it causes zombie connections with `skipNegotiation: true`. Instead, `onclose` fires and `index.js` rebuilds a fresh `HubConnection` with exponential backoff.
 - **In-flight poll guard** — `StudentTracker._poll()` uses a `_polling` boolean so slow network calls don't overlap across `setInterval` ticks.
 
@@ -65,7 +65,8 @@ Bus IDs are sanitized via `_sanitizeId()`: `"BUS 042"` → `"bus_042"`.
 
 | Variable | Required | Description |
 |---|---|---|
-| `MYRIDE_REFRESH_TOKEN` | Yes (or ACCESS_TOKEN) | Cognito refresh token |
+| `MYRIDE_EMAIL`, `MYRIDE_PASSWORD` | One of these, a refresh token or an access token | MyRide login; the bridge signs in with `USER_PASSWORD_AUTH` |
+| `MYRIDE_REFRESH_TOKEN` | See above | Cognito refresh token (tried before the password) |
 | `MYRIDE_TENANT_ID` | No | District UUID (read from the access token's `cognito:groups` when unset) |
 | `COGNITO_CLIENT_ID` | No | Default: `3c5382gsq7g13djnejo98p2d98` |
 | `MQTT_BROKER` | Yes | e.g. `homeassistant.local` |

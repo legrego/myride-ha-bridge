@@ -1,6 +1,6 @@
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { CognitoAuth, tenantIdsFromToken, resolveTenantId } = require("../src/cognito-auth");
+const { CognitoAuth, PasswordLogin, tenantIdsFromToken, resolveTenantId } = require("../src/cognito-auth");
 
 // Helper: build a fake JWT with a given payload
 function fakeJwt(payload) {
@@ -174,6 +174,95 @@ describe("CognitoAuth", () => {
     });
   });
 
+  describe("login()", () => {
+    function cognitoError(status, type, message) {
+      return async () => ({
+        ok: false,
+        status,
+        text: async () => JSON.stringify({ __type: type, message }),
+      });
+    }
+
+    it("signs in with USER_PASSWORD_AUTH and returns the refresh token", async () => {
+      let capturedBody, capturedTarget;
+      const accessToken = fakeJwt({ exp: 1700000000 });
+      globalThis.fetch = async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        capturedTarget = opts.headers["X-Amz-Target"];
+        return {
+          ok: true,
+          json: async () => ({
+            AuthenticationResult: { AccessToken: accessToken, IdToken: "id", RefreshToken: "rt" },
+          }),
+        };
+      };
+
+      const result = await auth.login("parent@example.com", "pw");
+      assert.deepEqual(capturedBody, {
+        AuthFlow: "USER_PASSWORD_AUTH",
+        ClientId: "test-client-id",
+        AuthParameters: { USERNAME: "parent@example.com", PASSWORD: "pw" },
+      });
+      assert.equal(capturedTarget, "AWSCognitoIdentityProviderService.InitiateAuth");
+      assert.deepEqual(result, { accessToken, idToken: "id", refreshToken: "rt", expiresIn: 1700000000 });
+    });
+
+    for (const [type, message] of [
+      ["NotAuthorizedException", "Incorrect username or password."],
+      ["NotAuthorizedException", "Password attempts exceeded"],
+      ["UserNotFoundException", "User does not exist."],
+      ["PasswordResetRequiredException", "Password reset required for the user"],
+      ["InvalidParameterException", "USER_PASSWORD_AUTH flow not enabled for this client"],
+    ]) {
+      it(`rejects the credentials for ${type}: ${message}`, async () => {
+        globalThis.fetch = cognitoError(400, type, message);
+        await assert.rejects(auth.login("u", "p"), (err) => {
+          assert.equal(err.credentialsRejected, true);
+          assert.equal(err.tokenExpired, true);
+          assert.match(err.message, /USER_PASSWORD_AUTH failed \(400\)/);
+          assert.ok(err.message.includes(message));
+          return true;
+        });
+      });
+    }
+
+    it("treats throttling, server and network errors as transient", async () => {
+      for (const fetchImpl of [
+        cognitoError(400, "TooManyRequestsException", "Rate exceeded"),
+        cognitoError(500, "InternalErrorException", "Internal error"),
+        async () => { throw new TypeError("fetch failed"); },
+      ]) {
+        globalThis.fetch = fetchImpl;
+        await assert.rejects(auth.login("u", "p"), (err) => {
+          assert.equal(err.credentialsRejected, false);
+          assert.equal(err.tokenExpired, false);
+          return true;
+        });
+      }
+    });
+
+    it("rejects the credentials when MyRide answers with a challenge", async () => {
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({ ChallengeName: "NEW_PASSWORD_REQUIRED", Session: "s" }),
+      });
+      await assert.rejects(auth.login("u", "p"), (err) => {
+        assert.equal(err.credentialsRejected, true);
+        assert.equal(err.tokenExpired, true);
+        assert.match(err.message, /NEW_PASSWORD_REQUIRED/);
+        return true;
+      });
+    });
+
+    it("throws when the sign-in returns no refresh token", async () => {
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({ AuthenticationResult: { AccessToken: fakeJwt({ exp: 1 }) } }),
+      });
+      await assert.rejects(auth.login("u", "p"), /no refresh token/);
+    });
+  });
+
   describe("validate()", () => {
     it("returns true when refresh succeeds", async () => {
       const accessToken = fakeJwt({ exp: 999 });
@@ -196,6 +285,88 @@ describe("CognitoAuth", () => {
 
       assert.equal(await auth.validate("bad-token"), false);
     });
+  });
+});
+
+describe("PasswordLogin", () => {
+  const TOKENS = { accessToken: "a", idToken: "i", refreshToken: "r", expiresIn: 1 };
+
+  function rejected(message = "Incorrect username or password.") {
+    const err = new Error(message);
+    err.credentialsRejected = true;
+    err.tokenExpired = true;
+    return err;
+  }
+
+  function fakeAuth(...outcomes) {
+    const calls = [];
+    return {
+      calls,
+      login: async (username, password) => {
+        calls.push([username, password]);
+        const next = outcomes.shift();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+  }
+
+  it("is configured only with both an email and a password", () => {
+    assert.equal(new PasswordLogin({ auth: fakeAuth(), username: "u", password: "p" }).configured, true);
+    assert.equal(new PasswordLogin({ auth: fakeAuth(), username: "u", password: null }).configured, false);
+    assert.equal(new PasswordLogin({ auth: fakeAuth(), username: "", password: "p" }).configured, false);
+  });
+
+  it("refuses to sign in when not configured", async () => {
+    const auth = fakeAuth();
+    await assert.rejects(new PasswordLogin({ auth, username: null, password: null }).login(), /No MyRide email/);
+    assert.equal(auth.calls.length, 0);
+  });
+
+  it("signs in with the configured credentials", async () => {
+    const auth = fakeAuth(TOKENS);
+    const login = new PasswordLogin({ auth, username: "u", password: "p" });
+    assert.deepEqual(await login.login(), TOKENS);
+    assert.deepEqual(auth.calls, [["u", "p"]]);
+    assert.equal(login.available, true);
+  });
+
+  it("shares one sign-in between concurrent callers", async () => {
+    const auth = fakeAuth(TOKENS);
+    const login = new PasswordLogin({ auth, username: "u", password: "p" });
+    const [a, b] = await Promise.all([login.login(), login.login()]);
+    assert.equal(a, b);
+    assert.equal(auth.calls.length, 1);
+  });
+
+  it("stops trying rejected credentials until reset()", async () => {
+    const auth = fakeAuth(rejected(), TOKENS);
+    const login = new PasswordLogin({ auth, username: "u", password: "p" });
+
+    await assert.rejects(login.login(), /Incorrect username or password/);
+    assert.equal(login.available, false);
+    assert.equal(login.rejection, "Incorrect username or password.");
+
+    // Further attempts fail without contacting Cognito, as an expired token would.
+    await assert.rejects(login.login(), (err) => {
+      assert.equal(err.tokenExpired, true);
+      assert.match(err.message, /rejected the email and password/);
+      return true;
+    });
+    assert.equal(auth.calls.length, 1);
+
+    login.reset();
+    assert.equal(login.available, true);
+    assert.deepEqual(await login.login(), TOKENS);
+    assert.equal(auth.calls.length, 2);
+  });
+
+  it("keeps trying after a transient failure", async () => {
+    const auth = fakeAuth(new Error("fetch failed"), TOKENS);
+    const login = new PasswordLogin({ auth, username: "u", password: "p" });
+    await assert.rejects(login.login(), /fetch failed/);
+    assert.equal(login.available, true);
+    assert.deepEqual(await login.login(), TOKENS);
   });
 });
 

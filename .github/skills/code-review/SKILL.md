@@ -66,7 +66,9 @@ Home Assistant over MQTT. A "good" review here catches the bugs that silently pr
 6. **Lifecycle & auth** (`src/index.js`, `src/cognito-auth.js`). Token-expiry idle mode must
    stop SignalR + tracker, set the credentials problem sensor, and keep the API server up.
    No `withAutomaticReconnect()` (zombie connections with `skipNegotiation`). Errors carrying
-   `err.tokenExpired` must route to `handleTokenExpired()`, not a generic retry.
+   `err.tokenExpired` must route to `handleTokenExpired()`, not a generic retry. Rejected
+   email/password sign-ins (`err.credentialsRejected`) must never be retried in a loop: each
+   attempt counts toward MyRide's account lockout. Never log the password.
 
 ## Tests
 

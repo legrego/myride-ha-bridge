@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+
+- Sign in with your MyRide email and password: set the new **MyRide email** and
+  **MyRide password** options and the app signs in itself, with no token to copy
+  out of the browser. When the sign-in expires (about every 30 days) it signs in
+  again on its own.
+- If MyRide rejects the email and password, the app stops trying them (so it
+  can't lock your account), turns on the credentials problem sensor, and waits
+  for corrected settings or a pasted refresh token.
+
 ## 1.3.0
 
 ### Added

@@ -6,8 +6,10 @@
  * real-time bus location data to MQTT for Home Assistant consumption.
  *
  * Auth approach: Cognito REFRESH_TOKEN_AUTH
- *   - One-time: capture your refresh token from the browser (see capture-tokens.js)
- *   - Ongoing: this bridge uses it to get fresh access tokens automatically
+ *   - Easiest: set your MyRide email and password; the bridge signs in itself
+ *     and signs in again whenever the refresh token expires
+ *   - Or: capture your refresh token from the browser (see capture-tokens.js)
+ *   - Ongoing: either way it gets fresh access tokens automatically
  *   - Fallback: you can also set a raw access token (expires in 60 min)
  *
  * Usage:
@@ -28,7 +30,12 @@ try {
       const eqIdx = trimmed.indexOf("=");
       if (eqIdx > 0) {
         const key = trimmed.slice(0, eqIdx).trim();
-        const val = trimmed.slice(eqIdx + 1).trim();
+        let val = trimmed.slice(eqIdx + 1).trim();
+        // Matching quotes keep a value as written (a password with spaces or `$`),
+        // as Docker Compose reads the same file.
+        if (val.length >= 2 && (val[0] === "'" || val[0] === '"') && val.at(-1) === val[0]) {
+          val = val.slice(1, -1);
+        }
         if (!process.env[key]) process.env[key] = val;
       }
     }
@@ -47,7 +54,7 @@ if (isAddon) {
   applyAddonOptions();
 }
 
-const { CognitoAuth, resolveTenantId } = require("./cognito-auth");
+const { CognitoAuth, PasswordLogin, resolveTenantId } = require("./cognito-auth");
 const { MyRideSignalRClient } = require("./signalr-client");
 const { MqttBridge, truncateJson } = require("./mqtt-bridge");
 const { ApiServer } = require("./api-server");
@@ -69,6 +76,8 @@ const config = {
   myride: {
     refreshToken: process.env.MYRIDE_REFRESH_TOKEN || null,
     accessToken: process.env.MYRIDE_ACCESS_TOKEN || null,
+    email: process.env.MYRIDE_EMAIL || null,
+    password: process.env.MYRIDE_PASSWORD || null,
     tenantId: process.env.MYRIDE_TENANT_ID || null,
   },
   mqtt: {
@@ -118,16 +127,46 @@ if (process.env.SIMULATE === "true") {
   return; // module-level: skip the rest of the file
 }
 
+// Always created: even in static access-token mode (or with no token yet) a
+// refresh token can arrive through POST /token.
+const auth = new CognitoAuth({
+  clientId: config.cognito.clientId,
+  region: config.cognito.region,
+});
+
+// Email/password sign-in: used when there's no refresh token, and again each time
+// the refresh token expires. A saved or submitted refresh token is tried first.
+const passwordLogin = new PasswordLogin({
+  auth,
+  username: config.myride.email,
+  password: config.myride.password,
+});
+if (Boolean(config.myride.email) !== Boolean(config.myride.password)) {
+  console.warn(
+    `[Auth] Only the MyRide ${config.myride.email ? "email" : "password"} is set; ` +
+    "set both to sign in with them."
+  );
+}
+
 // No token is not fatal: the status page is the way to supply one (as an add-on it's
 // the only way short of editing the options), so the bridge serves it and waits —
 // handleNewToken() starts the data side once POST /token delivers a valid token.
-const tokenMissing = !config.myride.refreshToken && !config.myride.accessToken;
+const tokenMissing =
+  !config.myride.refreshToken && !config.myride.accessToken && !passwordLogin.configured;
 if (tokenMissing) {
   console.error("╔═══════════════════════════════════════════════════════════╗");
-  console.error("║  No authentication token configured — waiting for one.   ║");
+  console.error("║  No MyRide credentials configured — waiting for them.    ║");
   console.error("╚═══════════════════════════════════════════════════════════╝");
   console.error();
-  console.error("You need to capture your token from the MyRide web app:");
+  if (isAddon) {
+    console.error("Easiest: enter your MyRide email and password on the app's");
+    console.error("Configuration tab, then restart the app.");
+  } else {
+    console.error("Easiest: set MYRIDE_EMAIL and MYRIDE_PASSWORD (your MyRide login)");
+    console.error("in your .env file and restart.");
+  }
+  console.error();
+  console.error("Or capture a refresh token from the MyRide web app:");
   console.error();
   console.error("  1. Log in to https://myridek12.tylerapp.com in Chrome");
   console.error("  2. Open DevTools (F12) → Console tab");
@@ -151,15 +190,8 @@ let tokenExpiresAt = 0;
 let refreshTokenExpired = false;
 const busStates = new Map(); // assetUniqueId → { name, lastSeen, speed, moving }
 
-// Always created: even in static access-token mode (or with no token yet) a
-// refresh token can arrive through POST /token.
-const auth = new CognitoAuth({
-  clientId: config.cognito.clientId,
-  region: config.cognito.region,
-});
-
 // If we only have a raw access token, decode its expiry
-if (currentAccessToken && !config.myride.refreshToken) {
+if (currentAccessToken && !config.myride.refreshToken && !passwordLogin.configured) {
   try {
     const payload = JSON.parse(
       Buffer.from(currentAccessToken.split(".")[1], "base64url").toString()
@@ -171,7 +203,8 @@ if (currentAccessToken && !config.myride.refreshToken) {
     );
     if (expiresIn < 300) {
       console.warn(
-        "[Auth] ⚠️  Token expires very soon! Set MYRIDE_REFRESH_TOKEN for auto-renewal."
+        "[Auth] ⚠️  Token expires very soon! Set MYRIDE_EMAIL and MYRIDE_PASSWORD " +
+        "(or MYRIDE_REFRESH_TOKEN) for auto-renewal."
       );
     }
   } catch {
@@ -183,24 +216,20 @@ if (currentAccessToken && !config.myride.refreshToken) {
 async function ensureFreshToken() {
   if (refreshTokenExpired) {
     throw new Error(
-      "Refresh token is expired or revoked. Update MYRIDE_REFRESH_TOKEN in .env and restart."
+      "MyRide credentials are expired or rejected. Submit a new refresh token on the status page, " +
+      "or fix the MyRide email and password."
     );
   }
 
   const now = Math.floor(Date.now() / 1000);
 
-  // If we have a refresh token and the access token is expiring soon, refresh
-  if (config.myride.refreshToken) {
+  // If we have a refresh token (or can sign in for one) and the access token is
+  // expiring soon, renew it
+  if (config.myride.refreshToken || passwordLogin.configured) {
     const needsRefresh = !currentAccessToken || now >= tokenExpiresAt - 300;
     if (needsRefresh) {
-      console.log("[Auth] Refreshing access token via Cognito...");
       try {
-        const tokens = await auth.refresh(config.myride.refreshToken);
-        currentAccessToken = tokens.accessToken;
-        tokenExpiresAt = tokens.expiresIn;
-        console.log(
-          `[Auth] Token refreshed, expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
-        );
+        await renewAccessToken();
       } catch (err) {
         // Permanent token errors (expired/revoked) must propagate immediately
         if (err.tokenExpired) throw err;
@@ -231,6 +260,39 @@ async function ensureFreshToken() {
   }
 
   throw new Error("No valid token available.");
+}
+
+/**
+ * Get a new access token: from the refresh token when there is one, otherwise —
+ * or once MyRide says it has expired — by signing in with the email and password,
+ * which also yields the next refresh token (kept in memory; a restart signs in
+ * again). Throws like CognitoAuth: `tokenExpired` when nothing configured works.
+ */
+async function renewAccessToken() {
+  if (config.myride.refreshToken) {
+    console.log("[Auth] Refreshing access token via Cognito...");
+    try {
+      const tokens = await auth.refresh(config.myride.refreshToken);
+      currentAccessToken = tokens.accessToken;
+      tokenExpiresAt = tokens.expiresIn;
+      console.log(
+        `[Auth] Token refreshed, expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
+      );
+      return;
+    } catch (err) {
+      if (!err.tokenExpired || !passwordLogin.available) throw err;
+      console.warn(`[Auth] Refresh token no longer works (${err.message}).`);
+    }
+  }
+
+  console.log(`[Auth] Signing in to MyRide as ${passwordLogin.username}...`);
+  const tokens = await passwordLogin.login();
+  config.myride.refreshToken = tokens.refreshToken;
+  currentAccessToken = tokens.accessToken;
+  tokenExpiresAt = tokens.expiresIn;
+  console.log(
+    `[Auth] Signed in, token expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
+  );
 }
 
 // ─── Tenant ID ───────────────────────────────────────────────────
@@ -300,12 +362,22 @@ async function handleTokenExpired() {
   refreshTokenExpired = true;
 
   console.error("╔═══════════════════════════════════════════════════════════╗");
-  console.error("║  REFRESH TOKEN EXPIRED — action required                 ║");
+  console.error("║  MYRIDE CREDENTIALS NO LONGER WORK — action required     ║");
   console.error("╚═══════════════════════════════════════════════════════════╝");
   console.error();
-  console.error("Your MyRide refresh token is no longer valid.");
-  console.error("To fix: re-run capture-tokens.js in your browser and paste the new");
-  console.error("refresh token on the status page (no restart needed).");
+  if (passwordLogin.rejection) {
+    console.error(`MyRide rejected the email and password: ${passwordLogin.rejection}`);
+    console.error(isAddon
+      ? "To fix: correct them on the app's Configuration tab and restart the app,"
+      : "To fix: correct MYRIDE_EMAIL / MYRIDE_PASSWORD and restart,");
+    console.error("or paste a refresh token on the status page (no restart needed).");
+    console.error("The bridge won't try this email and password again until then.");
+  } else {
+    console.error("Your MyRide refresh token is no longer valid.");
+    console.error("To fix: set your MyRide email and password so the bridge can sign in");
+    console.error("itself, or re-run capture-tokens.js in your browser and paste the new");
+    console.error("refresh token on the status page (no restart needed).");
+  }
   console.error();
   console.error("[Bridge] Stopping data stream. MQTT stays connected for HA visibility.");
 
@@ -357,6 +429,8 @@ async function handleNewToken(newRefreshToken) {
   currentAccessToken = tokens.accessToken;
   tokenExpiresAt = tokens.expiresIn;
   refreshTokenExpired = false;
+  // When this token expires, the email and password may be tried again.
+  passwordLogin.reset();
 
   console.log("[Auth] New token validated and active.");
 
@@ -537,7 +611,10 @@ function getBridgeStatus() {
     version,
     tokenExpired: refreshTokenExpired,
     // No token configured yet: the UI asks for one (the bridge is waiting on it).
-    tokenMissing: !config.myride.refreshToken && !currentAccessToken,
+    tokenMissing: !config.myride.refreshToken && !currentAccessToken && !passwordLogin.configured,
+    // Email/password sign-in: null when not configured; `rejected` is MyRide's
+    // reason once it has refused them. The email isn't exposed.
+    login: passwordLogin.configured ? { rejected: passwordLogin.rejection } : null,
     tokenExpiresAt: tokenExpiresAt ? new Date(tokenExpiresAt * 1000).toISOString() : null,
     tokenExpiresInSeconds: tokenExpiresAt ? Math.max(0, tokenExpiresAt - now) : null,
     signalrConnected: signalrClient ? signalrClient.state === "Connected" : false,
@@ -583,7 +660,9 @@ function runBridge() {
       // Expired at the first token check: nothing was built, so a new token
       // must start the bridge rather than hot-swap into it.
       if (!mqttBridge) bridgeStartup = null;
-      console.log("[Bridge] Idling — submit a new refresh token on the status page.");
+      console.log(passwordLogin.rejection
+        ? "[Bridge] Idling — fix the MyRide email and password, or submit a refresh token on the status page."
+        : "[Bridge] Idling — submit a new refresh token on the status page.");
     } else {
       console.error("Fatal error:", err.message || err);
       process.exit(1);
@@ -592,8 +671,11 @@ function runBridge() {
 }
 
 async function startBridge() {
+  const modes = [];
+  if (config.myride.refreshToken) modes.push("refresh token");
+  if (passwordLogin.configured) modes.push(`email and password for ${passwordLogin.username}`);
   console.log(
-    `[Auth] Mode: ${config.myride.refreshToken ? "refresh token (auto-renewing)" : "static access token"}`
+    `[Auth] Mode: ${modes.length ? `${modes.join(", then ")} — auto-renewing` : "static access token"}`
   );
 
   // Step 1: Get an initial access token, and the tenant ID it carries
@@ -852,7 +934,7 @@ async function startBridge() {
       `[Bridge] ⚠️  Static token mode — will expire in ${Math.round(remaining / 60)} minutes.`
     );
     console.warn(
-      `[Bridge]    Set MYRIDE_REFRESH_TOKEN in .env for continuous operation.`
+      `[Bridge]    Set MYRIDE_EMAIL and MYRIDE_PASSWORD (or MYRIDE_REFRESH_TOKEN) in .env for continuous operation.`
     );
   }
 }
