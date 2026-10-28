@@ -18,6 +18,8 @@ const SUPERVISOR_MQTT_URL = "http://supervisor/services/mqtt";
 
 // add-on option name → env var the bridge already reads
 const OPTION_ENV_MAP = {
+  myride_email: "MYRIDE_EMAIL",
+  myride_password: "MYRIDE_PASSWORD",
   refresh_token: "MYRIDE_REFRESH_TOKEN",
   tenant_id: "MYRIDE_TENANT_ID",
   timezone: "TZ",
@@ -26,10 +28,14 @@ const OPTION_ENV_MAP = {
   log_level: "LOG_LEVEL",
 };
 
+// Options passed through as typed: a password may start or end with a space.
+const UNTRIMMED_OPTIONS = new Set(["myride_password"]);
+
 /**
  * Copy add-on options into `env`. Options override env: under the Supervisor the
  * only env values are the image's defaults (e.g. LOG_LEVEL), which the user
- * can't change. Empty option values are skipped. A missing/unreadable file is
+ * can't change. Empty option values are skipped; values are trimmed, except the
+ * MyRide password. A missing/unreadable file is
  * a no-op.
  * @returns {boolean} true if an options file was applied
  */
@@ -45,7 +51,7 @@ function applyAddonOptions(optionsPath = OPTIONS_PATH, env = process.env) {
   for (const [option, key] of Object.entries(OPTION_ENV_MAP)) {
     const val = options[option];
     if (val == null || String(val).trim() === "") continue;
-    env[key] = String(val).trim();
+    env[key] = UNTRIMMED_OPTIONS.has(option) ? String(val) : String(val).trim();
   }
   return true;
 }

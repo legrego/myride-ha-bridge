@@ -15,8 +15,9 @@ You need:
   Container or Core, which can't run apps, see [Other ways to run](#other-ways-to-run).
 - A **MyRide K-12 account**, the one you use on
   [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
-- A **computer** with Chrome, Edge or Firefox, used once to copy a sign-in token out
-  of MyRide. A phone won't work for this step.
+- Your MyRide **email and password**. The bridge signs in with them itself. (If you'd
+  rather not store your password, you can instead copy a sign-in token out of MyRide
+  once a month, on a computer with Chrome, Edge or Firefox.)
 
 ### Step 1: Install the MQTT broker
 
@@ -37,9 +38,7 @@ The bridge finds the broker by itself, so you never type any MQTT settings.
 1. Select the button above. If Home Assistant asks to add the repository, select
    **Add**.
 2. Select **Install**.
-3. Turn on **Show in sidebar** and **Watchdog**, then select **Start**.
-
-There's nothing to configure.
+3. Turn on **Show in sidebar** and **Watchdog**.
 
 <details>
 <summary>Adding the app by hand instead</summary>
@@ -55,12 +54,33 @@ There's nothing to configure.
 
 ### Step 3: Connect your MyRide account
 
-MyRide doesn't let other programs sign in with your email and password, so you copy a
-sign-in token from your browser once. It takes about a minute, on your computer.
+1. On the app's **Configuration** tab, enter your **MyRide email** and **MyRide
+   password** (the ones you use on [myridek12.tylerapp.com](https://myridek12.tylerapp.com)),
+   then select **Save**.
+2. On the **Info** tab, select **Start** (or **Restart** if it's already running).
 
-1. In Home Assistant, open **School Bus** in the sidebar. It asks for a refresh token
-   and shows a snippet under **How do I get a refresh token?**. Select
-   **Copy to clipboard**.
+The bridge signs in to MyRide by itself, and signs in again whenever its sign-in
+expires, so there's nothing more to do.
+
+> Your password is stored on your Home Assistant host with the app's other settings,
+> like the MQTT broker's password. If you use the same password elsewhere, consider
+> giving MyRide its own, or use a token instead (below).
+
+If MyRide rejects the email and password, the bridge tries them only once (so it
+can't lock your account), shows **Credentials: Rejected** on the **School Bus** page
+and turns on `binary_sensor.myride_bridge_credentials`. Correct them on the
+**Configuration** tab and restart the app.
+
+<details>
+<summary>Use a refresh token instead of your password</summary>
+
+You copy a sign-in token from your browser. It takes about a minute, on a computer
+with Chrome, Edge or Firefox (a phone won't work), and you repeat it about once a
+month.
+
+1. Start the app with no email and password set. In Home Assistant, open **School
+   Bus** in the sidebar. It asks for a refresh token and shows a snippet under **How
+   do I get a refresh token?**. Select **Copy to clipboard**.
 2. In a new tab, sign in at [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
 3. Press **F12** (on a Mac, **⌥⌘J** in Chrome or Edge, **⌥⌘K** in Firefox) to open the
    developer tools, and select the **Console** tab.
@@ -74,6 +94,8 @@ sign-in token from your browser once. It takes about a minute, on your computer.
 > The refresh token is a sign-in credential for your MyRide account. Don't share it.
 > It lasts about 30 days; see [When the token expires](#when-the-token-expires).
 
+</details>
+
 ### Step 4: Check that it works
 
 - On the **School Bus** page, **MyRide K-12**, **MQTT** and **Credentials** should all
@@ -86,9 +108,12 @@ the map pin stays where the bus last parked.
 
 ### When the token expires
 
-The refresh token lasts about 30 days. When it expires the bridge keeps running, and
-`binary_sensor.myride_bridge_credentials` turns **on** (you can
-[get a notification](#token-expired)). To fix it, repeat
+The bridge's sign-in (its refresh token) lasts about 30 days. With your email and
+password set, the bridge simply signs in again, and you don't notice.
+
+With a pasted token and no password, the bridge keeps running when the token
+expires, and `binary_sensor.myride_bridge_credentials` turns **on** (you can
+[get a notification](#token-expired)). To fix it, copy a new token as in
 [step 3](#step-3-connect-your-myride-account). The snippet is under **Token
 Management → How do I get a refresh token?**. The bridge starts streaming again
 within seconds, with no restart.
@@ -120,7 +145,7 @@ For a student with ID `1234567` you get:
 | `binary_sensor.myride_student_1234567_route_snap_ok` | Binary Sensor | Is stop-progress currently using trusted route mode? |
 | `sensor.myride_student_1234567_last_fix` | Sensor | GPS time of the latest fix for the student's bus (diagnostic timestamp) |
 | `binary_sensor.myride_student_1234567_feed_live` | Binary Sensor | Has a fix arrived in the last 2 minutes? (diagnostic; OFF = tracking lost) |
-| `binary_sensor.myride_bridge_credentials` | Binary Sensor | Credential problem alert (ON = expired) |
+| `binary_sensor.myride_bridge_credentials` | Binary Sensor | Credential problem alert (ON = expired or rejected) |
 | `binary_sensor.myride_bridge_position_stream` | Binary Sensor | Is MyRide streaming positions for today's bus(es) to the bridge? (diagnostic; OFF = stream silent on a run day, unknown = no runs today; attributes carry connection/reconnect details) |
 | `sensor.myride_bridge_last_frame_received` | Sensor | When the bridge last received any position frame, any bus (diagnostic timestamp, updated at most once a minute) |
 
@@ -134,8 +159,9 @@ None are needed for a normal setup.
 
 | Option | Description |
 |--------|-------------|
-| Tenant ID | Your district's MyRide ID. Read from your token; set it only if the log says it couldn't find one |
-| Refresh token | Another way to give the bridge your token. Once you submit a token on the status page, that one is used instead |
+| MyRide email, MyRide password | Your MyRide login. The bridge signs in with it, and again whenever its sign-in expires |
+| Tenant ID | Your district's MyRide ID. Read from your sign-in; set it only if the log says it couldn't find one |
+| Refresh token | Another way to give the bridge a token, not needed with the email and password. Once you submit a token on the status page, that one is used instead |
 | District time zone | Used to tell the AM run from the PM run. Leave empty to use your Home Assistant time zone |
 | Approach radius | Distance in meters at which "Approaching Stop" turns on (default 500) |
 | Bus filter | Track only this bus, such as `BUS 042`. Leave empty to follow each student's bus automatically |
@@ -191,7 +217,7 @@ actions:
 ### Token expired
 
 ```yaml
-alias: MyRide token expired
+alias: MyRide sign-in stopped working
 triggers:
   - trigger: state
     entity_id: binary_sensor.myride_bridge_credentials
@@ -199,9 +225,10 @@ triggers:
 actions:
   - action: notify.mobile_app_your_phone
     data:
-      title: "MyRide Bridge: token expired"
+      title: "MyRide Bridge: sign-in stopped working"
       message: >
-        Get a new MyRide refresh token and paste it on the School Bus page.
+        Check the MyRide email and password on the app's Configuration tab, or
+        paste a new refresh token on the School Bus page.
 ```
 
 ### Live bus map card
@@ -229,9 +256,17 @@ The bridge normally reads your district's ID from your MyRide token. If it can't
 the developer tools open on the **Network** tab: requests to
 `myridek12.tylerapi.com` carry it in an `x-tenant-id` header.
 
+### Credentials show "Rejected"
+MyRide refused the email and password. Check them by signing in at
+[myridek12.tylerapp.com](https://myridek12.tylerapp.com), correct them on the
+**Configuration** tab, and restart the app. The exact reason is in the **Log** tab.
+If MyRide asks your account for an extra step, such as a code or a new password, the
+bridge can't answer it: use a [refresh token](#step-3-connect-your-myride-account)
+instead.
+
 ### Credentials show "Expired" or "Missing"
-The refresh token has expired, or none was set. Follow
-[When the token expires](#when-the-token-expires).
+The refresh token has expired, or no email and password or token was set. Follow
+[step 3](#step-3-connect-your-myride-account).
 
 ### No devices in Home Assistant
 Make sure the **MQTT** integration is set up (step 1). The devices are listed under
@@ -289,12 +324,15 @@ that Home Assistant uses.
 
 1. Download [`docker-compose.yml`](./docker-compose.yml) and
    [`.env.example`](./.env.example) into a folder, and rename `.env.example` to `.env`.
-2. In `.env`, set your broker's `MQTT_BROKER`, `MQTT_USERNAME` and `MQTT_PASSWORD`.
+2. In `.env`, set your broker's `MQTT_BROKER`, `MQTT_USERNAME` and `MQTT_PASSWORD`,
+   and your MyRide login in `MYRIDE_EMAIL` and `MYRIDE_PASSWORD`.
 3. Run `docker compose up -d`.
-4. Open the status page at `http://YOUR_HOST:8099` and follow
-   [step 3](#step-3-connect-your-myride-account) to submit your refresh token.
+4. Open the status page at `http://YOUR_HOST:8099` to check that it works.
 
-The `/data` volume keeps the token you submitted across container recreates. You can also submit a new token with
+To use a refresh token instead of your password, leave `MYRIDE_EMAIL` and
+`MYRIDE_PASSWORD` unset and submit the token on the status page as in
+[step 3](#step-3-connect-your-myride-account). The `/data` volume keeps the token
+you submitted across container recreates. You can also submit a new token with
 `curl -X POST http://YOUR_HOST:8099/token -d 'NEW_REFRESH_TOKEN'`.
 
 ### Node.js
@@ -309,10 +347,10 @@ cp .env.example .env
 npm start
 ```
 
-In `.env`, set your MQTT broker as for Docker Compose, and change `TOKEN_FILE` to
-`./data/refresh_token`: the default `/data` is the Docker volume, which a normal user
-usually can't write to, and the token you submit on the status page is saved there.
-Then submit your token at `http://localhost:8099` ([step 3](#step-3-connect-your-myride-account)).
+In `.env`, set your MQTT broker and MyRide login as for Docker Compose, and change
+`TOKEN_FILE` to `./data/refresh_token`: the default `/data` is the Docker volume,
+which a normal user usually can't write to, and a token you submit on the status page
+is saved there. The status page is at `http://localhost:8099`.
 
 <details>
 <summary>Run it as a systemd service</summary>
@@ -355,7 +393,8 @@ Outside the app, the bridge is configured with environment variables (or `.env`)
 
 | Variable | Description |
 |----------|-------------|
-| `MYRIDE_REFRESH_TOKEN` | Refresh token, from step 3 (or submit it on the status page) |
+| `MYRIDE_EMAIL`, `MYRIDE_PASSWORD` | Your MyRide login. The bridge signs in with it when it has no working refresh token |
+| `MYRIDE_REFRESH_TOKEN` | Refresh token, instead of the email and password (or submit it on the status page) |
 | `MYRIDE_TENANT_ID` | District ID. Optional: read from the token when unset |
 | `MQTT_BROKER`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD` | Your MQTT broker |
 | `TZ` | District time zone (default `America/New_York`) |
@@ -375,15 +414,15 @@ metadata) and `GET /snippet` (the token snippet as plain text).
 ## How it works
 
 ```
-┌────────────-───────────┐
-│  myridek12.tylerapp    │  ← You log in here once in a browser
-│  (Tyler IdentityServer)│    to capture your Cognito refresh token
-└───────────┬───────-────┘
-            │ refresh_token
-            ▼
-┌─────────────────┐   REFRESH_TOKEN_AUTH   ┌───────────────────────┐
-│  cognito-auth   │────────────────-─────▶ │  AWS Cognito          │
-│                 │◀── access_token ─-──── │  us-east-1_sfRczsC0e  │
+  MyRide email + password       or a refresh token copied
+  (app options or .env)         from the MyRide web app
+         │                               │
+         ├───────────────────────────────┘
+         ▼
+┌─────────────────┐   USER_PASSWORD_AUTH   ┌───────────────────────┐
+│  cognito-auth   │   REFRESH_TOKEN_AUTH   │  AWS Cognito          │
+│                 │──────────────────────▶ │  us-east-1_sfRczsC0e  │
+│                 │◀──── access_token ──── │                       │
 └────────┬────────┘   (auto every 50 min)  └───────────────────────┘
          │
          │ access_token
@@ -407,26 +446,28 @@ metadata) and `GET /snippet` (the token snippet as plain text).
 └─────────────────┘
 ```
 
-### Why not just use email and password?
+### Signing in
 
-Tyler Technologies doesn't allow direct Cognito authentication (SRP and
-USER_PASSWORD_AUTH are both disabled on their Cognito client). Login goes through
-Tyler's own IdentityServer at `myridek12.tylerapp.com/login/core/connect/authorize`,
-which handles the web login form and issues Cognito tokens server-side.
-
-The workaround: capture your Cognito **refresh token** once from the browser, then
-this bridge uses Cognito's `REFRESH_TOKEN_AUTH` flow to get fresh access tokens
-automatically.
+MyRide's login runs on AWS Cognito. Its public web-app client accepts
+`USER_PASSWORD_AUTH`, so the bridge signs in with the email and password directly
+(no browser) and gets a Cognito **refresh token**. It then uses Cognito's
+`REFRESH_TOKEN_AUTH` flow to get fresh access tokens, and signs in again when the
+refresh token expires. The other sign-in flows (SRP, custom and passwordless) are
+off. Tyler could turn `USER_PASSWORD_AUTH` off too, so a refresh token captured from
+the web app still works as a fallback. See
+[the research notes](docs/research/2026-10-28-credential-bootstrap.md).
 
 ### Token lifecycle
 
 | Token | Lifetime | Auto-renewed? |
 |-------|----------|---------------|
 | Access token | 60 minutes | Yes, via refresh token |
-| Refresh token | ~30 days (Cognito default) | No — re-capture from browser |
+| Refresh token | ~30 days (Cognito default) | Yes with an email and password, by signing in again; otherwise re-capture from browser |
 
 The bridge refreshes the access token every 50 minutes automatically. When the
-refresh token itself expires, the bridge **does not crash**. Instead it:
+refresh token itself expires, it signs in again if an email and password are set.
+If there's no password, or MyRide rejects it (tried once, so the account can't get
+locked), the bridge **does not crash**. Instead it:
 
 1. Logs a prominent error banner
 2. Stops the SignalR data stream

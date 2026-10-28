@@ -105,8 +105,8 @@ Instead of a console paste, the status page shows a **"drag to bookmarks bar"** 
 ## Recommendation
 
 1. ~~Run the decisive test above with a real account.~~ Passed (see the result above).
-2. Build **A**, with the token form (and **C**) as the fallback.
+2. ~~Build **A**, with the token form as the fallback.~~ Shipped in 1.4.0 (`myride_email`/`myride_password`). **C** is still open.
 3. Keep **B** in reserve, in case other districts' accounts turn out to be federated or Tyler turns the flow off.
-4. Fix the README and the `cognito-auth.js` header. "SRP disabled" is right; "USER_PASSWORD_AUTH disabled" is not, at the client level.
+4. ~~Fix the README and the `cognito-auth.js` header.~~ Done in 1.4.0.
 
 Side note for whichever option ships: Cognito now offers refresh-token rotation (`GetTokensFromRefreshToken`, which the pool already answers). If Tyler enables rotation, `REFRESH_TOKEN_AUTH` stops working and the bridge would have to persist each new refresh token. Watch for it, but there is nothing to do now.

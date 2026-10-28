@@ -507,6 +507,9 @@
         <details class="snippet-card">
           <summary>How do I get a refresh token?</summary>
           <div class="snippet-body">
+            <p><strong>Easier:</strong> skip the token. Enter your MyRide email and password on the
+              app's Configuration tab (or set <code>MYRIDE_EMAIL</code> and <code>MYRIDE_PASSWORD</code>)
+              and the bridge signs in itself.</p>
             <ol>
               <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
               <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
@@ -660,10 +663,14 @@
         setPill('s-signalr', s.signalrConnected, s.signalrConnected ? 'Connected' : 'Disconnected');
         setPill('s-mqtt', s.mqttConnected, s.mqttConnected ? 'Connected' : 'Disconnected');
         const needsToken = s.tokenExpired || s.tokenMissing;
-        setPill('s-creds', !needsToken, s.tokenMissing ? 'Missing' : s.tokenExpired ? 'Expired' : 'Valid');
+        const loginRejected = Boolean(s.login && s.login.rejected);
+        setPill('s-creds', !needsToken,
+          s.tokenMissing ? 'Missing' : loginRejected ? 'Rejected' : s.tokenExpired ? 'Expired' : 'Valid');
         $('cred-banner').textContent = s.tokenMissing
-          ? 'No refresh token configured — submit one below to start the bridge'
-          : 'Credentials expired — submit a new refresh token below';
+          ? 'No MyRide sign-in configured — set your MyRide email and password, or submit a refresh token below'
+          : loginRejected
+            ? 'MyRide rejected the email and password — correct them, or submit a refresh token below'
+            : 'Credentials expired — submit a new refresh token below';
         $('cred-banner').className = needsToken ? 'visible' : '';
         lastTokenExpiresAt = s.tokenExpiresAt;
         lastTokenExpired = s.tokenExpired;

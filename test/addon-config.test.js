@@ -42,6 +42,12 @@ describe("applyAddonOptions", () => {
     });
   });
 
+  it("maps the MyRide email and password, keeping the password as typed", () => {
+    const env = {};
+    applyAddonOptions(writeOptions({ myride_email: " parent@example.com ", myride_password: " p@ss " }), env);
+    assert.deepEqual(env, { MYRIDE_EMAIL: "parent@example.com", MYRIDE_PASSWORD: " p@ss " });
+  });
+
   it("overrides image defaults such as LOG_LEVEL", () => {
     const env = { LOG_LEVEL: "info" };
     applyAddonOptions(writeOptions({ log_level: "debug" }), env);
