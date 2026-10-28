@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+
+- The bus sensor's `todays_runs` attribute now lists each run's time window, the
+  student's own stop time and action (`Pickup`/`Dropoff`), and which run is
+  current. A changed schedule, like a half day's early dropoff, now shows as soon
+  as MyRide publishes it, not only once that run becomes the current one.
+
 ## 1.2.0
 
 ### Changed

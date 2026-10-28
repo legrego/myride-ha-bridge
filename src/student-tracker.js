@@ -767,6 +767,7 @@ function normalizeStudent(student, nowMinutes) {
     const stops = run.stopsInfo || [];
     const windowStart = stops.length > 0 ? stopTimeToMinutes(stops[0].stopTime) : null;
     const windowEnd = stops.length > 1 ? stopTimeToMinutes(stops[stops.length - 1].stopTime) : windowStart;
+    const runStop = pickMyStop(run, homeAddress, locationName);
     return {
       runId: run.runId,
       busNumber: run.busNumber,
@@ -774,6 +775,10 @@ function normalizeStudent(student, nowMinutes) {
       isSubstitute: run.activeVehicle !== run.busNumber,
       windowStart,
       windowEnd,
+      // The student's own stop on *this* run, so every run's time is visible all
+      // day (e.g. a half-day's early dropoff while the AM run is still current).
+      myStopAction: runStop ? runStop.actionType : null,
+      myStopTimeMinutes: runStop ? runStop.stopTimeMinutes : null,
       stopsInfo: run.stopsInfo,
     };
   });
