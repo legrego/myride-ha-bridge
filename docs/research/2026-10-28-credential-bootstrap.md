@@ -36,7 +36,8 @@ Inference, not verified because `*.tylerapp.com` was unreachable from the spike 
 ### Decisive test (2 minutes, needs a real account)
 
 ```bash
-read -rp "MyRide email: " U; read -rsp "Password: " P; echo
+printf "MyRide email: "; read -r U
+printf "Password: "; stty -echo; read -r P; stty echo; echo
 curl -sS https://cognito-idp.us-east-1.amazonaws.com/ \
   -H 'Content-Type: application/x-amz-json-1.1' \
   -H 'X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth' \
