@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1
+
+### Fixed
+
+- The **Open Configuration tab** button on the School Bus page no longer leads
+  to a "page not found". Home Assistant 2026.2 moved app pages from
+  `/hassio/addon/…` to `/config/app/…`.
+
 ## 1.5.0
 
 ### Changed
