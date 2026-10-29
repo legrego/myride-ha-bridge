@@ -3,12 +3,16 @@ const assert = require("node:assert/strict");
 
 // Mock mqtt module before requiring MqttBridge
 const publishCalls = [];
+const subscribeCalls = [];
 const onHandlers = {};
 let endCallback;
 
 const fakeMqttClient = {
   publish(...args) {
     publishCalls.push(args);
+  },
+  subscribe(topic) {
+    subscribeCalls.push(topic);
   },
   on(event, handler) {
     onHandlers[event] = handler;
@@ -1607,6 +1611,72 @@ describe("MqttBridge", () => {
     it("publishFeedLive is a no-op before discovery", () => {
       bridge.publishFeedLive(student, false);
       assert.equal(topicCalls("myride/student/900001/feed_live").length, 0);
+    });
+  });
+
+  describe("status page snapshot", () => {
+    // Fabricated student and bus.
+    const student = {
+      uniqueId: "900001",
+      firstName: "Test",
+      lastName: "Student",
+      currentRun: { runId: 1, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false },
+      todaysRuns: [],
+    };
+
+    it("counts the discovery configs and devices it published, not legacy clears", () => {
+      bridge.publishCredentialStatusDiscovery();
+      bridge.publishStreamHealthDiscovery();
+      bridge.clearBusDiscovery("BUS 900");
+      const before = bridge.snapshot().discovery;
+      assert.deepEqual(before, { devices: 1, entities: 3 });
+      bridge.publishStudent(student);
+      const after = bridge.snapshot().discovery;
+      assert.equal(after.devices, 2);
+      assert.ok(after.entities > 3);
+    });
+
+    it("reports the broker, connection state and last publish time", () => {
+      fakeMqttClient.connected = true;
+      bridge.publishCredentialStatus(false);
+      const snap = bridge.snapshot();
+      assert.equal(snap.broker, "localhost");
+      assert.equal(snap.port, 1883);
+      assert.equal(snap.connected, true);
+      assert.ok(Date.parse(snap.lastPublishAt) > 0);
+      delete fakeMqttClient.connected;
+    });
+
+    it("returns the last payload published to a student's topic", () => {
+      bridge.publishStudent(student);
+      bridge.publishFeedLive(student, false);
+      assert.equal(bridge.studentValue("900001", "feed_live"), "OFF");
+      assert.equal(bridge.studentValue("900001", "nope"), null);
+    });
+
+    it("records Home Assistant's birth message after subscribing on connect", () => {
+      const events = [];
+      bridge.onEvent = (...e) => events.push(e);
+      subscribeCalls.length = 0;
+      onHandlers.connect();
+      assert.deepEqual(subscribeCalls, ["homeassistant/status"]);
+      onHandlers.message("homeassistant/status", Buffer.from("online"));
+      const { haStatus } = bridge.snapshot();
+      assert.equal(haStatus.state, "online");
+      assert.ok(Date.parse(haStatus.at) > 0);
+      assert.ok(events.some(([level, category]) => level === "info" && category === "Home Assistant"));
+      // Other topics are ignored.
+      onHandlers.message("myride/other", Buffer.from("x"));
+      assert.equal(bridge.snapshot().haStatus.state, "online");
+    });
+
+    it("reports a connection drop once, not on every failed retry", () => {
+      const events = [];
+      bridge.onEvent = (...e) => events.push(e);
+      onHandlers.connect();
+      onHandlers.close();
+      onHandlers.close();
+      assert.deepEqual(events.map(([level, category]) => `${level} ${category}`), ["info MQTT", "warn MQTT"]);
     });
   });
 });

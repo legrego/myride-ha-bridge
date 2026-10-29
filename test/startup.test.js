@@ -154,6 +154,17 @@ describe("startup with a rejected MyRide password", { skip: hasDotEnv && "a .env
     assert.ok(!JSON.stringify(status).includes("parent@example.com"));
   });
 
+  it("gives the status page the rejection's time and an event", async () => {
+    const status = await getStatus(bridge);
+    assert.equal(status.runtime, "standalone");
+    assert.equal(status.signIn.method, "password");
+    assert.ok(Date.parse(status.signIn.rejectedAt) > 0);
+    const rejection = status.events.find((e) => e.marker === "!");
+    assert.equal(rejection.level, "error");
+    assert.match(rejection.message, /rejected the email and password/);
+    assert.ok(status.events.some((e) => e.marker === "S"));
+  });
+
   it("doesn't sign in again while idle", async () => {
     await new Promise((r) => setTimeout(r, 300));
     await getStatus(bridge);

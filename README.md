@@ -67,8 +67,8 @@ expires, so there's nothing more to do.
 > giving MyRide its own, or use a token instead (below).
 
 If MyRide rejects the email and password, the bridge tries them only once (so it
-can't lock your account), shows **Credentials: Rejected** on the **School Bus** page
-and turns on `binary_sensor.myride_bridge_credentials`. Correct them on the
+can't lock your account), says so on the **School Bus** page and turns on
+`binary_sensor.myride_bridge_credentials`. Correct them on the
 **Configuration** tab and restart the app.
 
 <details>
@@ -79,8 +79,9 @@ with Chrome, Edge or Firefox (a phone won't work), and you repeat it about once 
 month.
 
 1. Start the app with no email and password set. In Home Assistant, open **School
-   Bus** in the sidebar. It asks for a refresh token and shows a snippet under **How
-   do I get a refresh token?**. Select **Copy to clipboard**.
+   Bus** in the sidebar and go to the **Setup** tab. It opens **Advanced: use a
+   refresh token instead** and shows a snippet under **How do I get a refresh
+   token?**. Select **Copy to clipboard**.
 2. In a new tab, sign in at [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
 3. Press **F12** (on a Mac, **⌥⌘J** in Chrome or Edge, **⌥⌘K** in Firefox) to open the
    developer tools, and select the **Console** tab.
@@ -89,7 +90,7 @@ month.
 5. The snippet prints your **refresh token** (a long string starting with `eyJ`) and
    copies it to your clipboard.
 6. Go back to the **School Bus** page, paste the token into the box and select
-   **Submit Token**.
+   **Save token**.
 
 > The refresh token is a sign-in credential for your MyRide account. Don't share it.
 > It lasts about 30 days; see [When the token expires](#when-the-token-expires).
@@ -98,8 +99,9 @@ month.
 
 ### Step 4: Check that it works
 
-- On the **School Bus** page, **MyRide K-12**, **MQTT** and **Credentials** should all
-  show green within a few seconds.
+- Open **School Bus** in the sidebar. Within a few seconds its **Overview** tab should
+  say **Working**. If something is wrong, it names the broken step (MyRide sign-in,
+  students and runs, position stream, MQTT broker or HA discovery) and what to do.
 - Go to **Settings → Devices & services → MQTT**. Each student linked to your MyRide
   account is now a device, named after the student.
 
@@ -114,9 +116,9 @@ password set, the bridge simply signs in again, and you don't notice.
 With a pasted token and no password, the bridge keeps running when the token
 expires, and `binary_sensor.myride_bridge_credentials` turns **on** (you can
 [get a notification](#token-expired)). To fix it, copy a new token as in
-[step 3](#step-3-connect-your-myride-account). The snippet is under **Token
-Management → How do I get a refresh token?**. The bridge starts streaming again
-within seconds, with no restart.
+[step 3](#step-3-connect-your-myride-account). The snippet is on the **School Bus**
+page's **Setup** tab, under **Advanced: use a refresh token instead**. The bridge
+starts streaming again within seconds, with no restart.
 
 ## What you get
 
@@ -245,7 +247,9 @@ hours_to_show: 0
 
 ## Troubleshooting
 
-Start with the app's **Log** tab. Every line has a timestamp.
+Start with the **School Bus** page. Its **Overview** tab names the broken step, and
+its **Events** tab shows today's sign-ins, reconnects and feed gaps on a timeline.
+For the full detail, see the app's **Log** tab, where every line has a timestamp.
 
 ### The app won't start
 Check that the Mosquitto broker app is installed and running.
@@ -256,7 +260,7 @@ The bridge normally reads your district's ID from your MyRide token. If it can't
 the developer tools open on the **Network** tab: requests to
 `myridek12.tylerapi.com` carry it in an `x-tenant-id` header.
 
-### Credentials show "Rejected"
+### Sign-in shows "Rejected"
 MyRide refused the email and password. Check them by signing in at
 [myridek12.tylerapp.com](https://myridek12.tylerapp.com), correct them on the
 **Configuration** tab, and restart the app. The exact reason is in the **Log** tab.
@@ -264,7 +268,7 @@ If MyRide asks your account for an extra step, such as a code or a new password,
 bridge can't answer it: use a [refresh token](#step-3-connect-your-myride-account)
 instead.
 
-### Credentials show "Expired" or "Missing"
+### Sign-in shows "Expired" or "Not set up"
 The refresh token has expired, or no email and password or token was set. Follow
 [step 3](#step-3-connect-your-myride-account).
 
@@ -294,7 +298,8 @@ no frame for `STREAM_SILENCE_SECONDS` (default 300), backing off to one attempt 
 15 minutes while the stream stays silent (`reason=watchdog`). A tracked connection
 receives a repeat of the latest fix about every 5 seconds even while the bus is
 parked, so silence really means "not tracked". `binary_sensor.myride_bridge_position_stream`
-shows the result in Home Assistant, and `GET /status` includes a `stream` section.
+shows the result in Home Assistant, the **Events** tab of the status page draws it on
+a timeline, and `GET /status` includes a `stream` section.
 
 ### Tracking the wrong bus (e.g. regular bus instead of today's substitute)
 On days with both a morning and afternoon run, the bridge picks the run whose
@@ -328,6 +333,10 @@ that Home Assistant uses.
    and your MyRide login in `MYRIDE_EMAIL` and `MYRIDE_PASSWORD`.
 3. Run `docker compose up -d`.
 4. Open the status page at `http://YOUR_HOST:8099` to check that it works.
+
+> Outside Home Assistant the status page has no login, and it shows your students'
+> first names, their runs and stop times, and accepts a refresh token. Keep port
+> 8099 on your home network; don't forward it to the internet.
 
 To use a refresh token instead of your password, leave `MYRIDE_EMAIL` and
 `MYRIDE_PASSWORD` unset and submit the token on the status page as in

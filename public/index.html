@@ -4,689 +4,1104 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MyRide HA Bridge</title>
+  <title>MyRide Bus Bridge</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚌</text></svg>">
   <style>
     :root {
-      --yellow: #FFD700;
-      --yellow-dark: #e6c200;
-      --blue: #4A90D9;
-      --green: #2E7D32;
-      --red: #D32F2F;
-      --bg: #FFFDE7;
-      --card: #FFFFFF;
-      --text: #1A1A1A;
-      --muted: #666;
-      --radius: 10px;
+      --bg: #f4f5f7;
+      --card: #ffffff;
+      --border: #e1e4e8;
+      --rule: #eef0f2;
+      --text: #1f2328;
+      --text-2: #3d4248;
+      --muted: #5b6168;
+      --accent: #0261a5;
+      --accent-soft: #e7f1fa;
+      --bus: #f9c80e;
+      --ok-fg: #1a6b33; --ok-bg: #e5f3e9; --ok-dot: #2e9d55;
+      --warn-fg: #7f4d00; --warn-bg: #fff1d6; --warn-dot: #e08e0b;
+      --error-fg: #a8231b; --error-bg: #fde7e5; --error-dot: #d93025;
+      --idle-fg: #50565c; --idle-bg: #eceef1; --idle-dot: #9aa0a6;
+      --track: #f4f5f7;
+      --band-done: #dfe3e8;
+      --bar: #6b8fb3;
+      --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+      --radius: 12px;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111315;
+        --card: #1c1f22;
+        --border: #2d3135;
+        --rule: #262a2e;
+        --text: #e6e8ea;
+        --text-2: #c4c8cc;
+        --muted: #9aa1a8;
+        --accent: #6cb4f0;
+        --accent-soft: #1b2c3b;
+        --ok-fg: #8fd9a6; --ok-bg: #173323; --ok-dot: #3fb96a;
+        --warn-fg: #f5c46b; --warn-bg: #3a2c10; --warn-dot: #e8a33a;
+        --error-fg: #f4a29b; --error-bg: #3f1d1a; --error-dot: #ec5b4f;
+        --idle-fg: #b5bbc1; --idle-bg: #2a2e33; --idle-dot: #7d848b;
+        --track: #24282c;
+        --band-done: #343a40;
+        --bar: #7fa3c7;
+      }
     }
+
+    * { box-sizing: border-box; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
+      font-size: 14px;
+      line-height: 1.45;
     }
 
-    header {
-      background: var(--yellow);
-      padding: 16px 24px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      border-bottom: 4px solid var(--yellow-dark);
-    }
-
-    header h1 {
-      font-size: 1.3rem;
-      font-weight: 700;
-      letter-spacing: -0.3px;
-    }
-
-    header .bus-icon {
-      font-size: 1.6rem;
-    }
-
-    main {
-      max-width: 560px;
-      margin: 32px auto;
-      padding: 0 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-    }
-
-    .card {
-      background: var(--card);
-      border-radius: var(--radius);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-      overflow: hidden;
-    }
-
-    .card-title {
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--muted);
-      padding: 14px 20px 10px;
-      border-bottom: 1px solid #f0f0f0;
-    }
-
-    .status-grid {
-      padding: 16px 20px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-
-    .status-item label {
-      display: block;
-      font-size: 0.72rem;
-      color: var(--muted);
-      margin-bottom: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .pill {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 20px;
-      font-size: 0.8rem;
-      font-weight: 600;
-    }
-
-    .pill.ok {
-      background: #E8F5E9;
-      color: var(--green);
-    }
-
-    .pill.warn {
-      background: #FFEBEE;
-      color: var(--red);
-    }
-
-    .pill.info {
-      background: #E3F2FD;
-      color: var(--blue);
-    }
-
-    .pill.dim {
-      background: #F5F5F5;
-      color: var(--muted);
-    }
-
-    .status-item .value {
-      font-size: 0.85rem;
-      font-weight: 500;
-    }
-
-    .value.token-expiry-ok { color: var(--green); font-weight: 600; }
-    .value.token-expiry-warn { color: #E65100; font-weight: 600; }
-    .value.token-expiry-danger { color: var(--red); font-weight: 600; }
-
-    .refresh-note {
-      font-size: 0.72rem;
-      color: var(--muted);
-      padding: 6px 20px 14px;
-      text-align: right;
-    }
-
-    .app-footer {
-      font-size: 0.72rem;
-      color: var(--muted);
-      text-align: center;
-      padding: 18px 20px 8px;
-    }
-
-    .app-footer code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-
-    form {
-      padding: 16px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    textarea {
-      width: 100%;
-      height: 90px;
-      padding: 10px 12px;
-      border: 1.5px solid #ddd;
-      border-radius: 6px;
-      font-family: "SF Mono", Menlo, monospace;
-      font-size: 0.78rem;
-      resize: vertical;
-      background: #fafafa;
-    }
-
-    textarea:focus {
-      outline: none;
-      border-color: var(--blue);
-    }
-
-    button {
-      align-self: flex-start;
-      padding: 9px 20px;
-      background: var(--yellow);
-      border: 2px solid var(--yellow-dark);
-      border-radius: 6px;
-      font-weight: 700;
-      font-size: 0.85rem;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: var(--yellow-dark);
-    }
-
-    button:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    #token-msg {
-      font-size: 0.82rem;
-      padding: 8px 12px;
-      border-radius: 6px;
-      display: none;
-    }
-
-    #token-msg.ok {
-      background: #E8F5E9;
-      color: var(--green);
-      display: block;
-    }
-
-    #token-msg.warn {
-      background: #FFEBEE;
-      color: var(--red);
-      display: block;
-    }
-
-    #sim-banner, #cred-banner {
-      display: none;
-      text-align: center;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      padding: 6px 16px;
-    }
+    a { color: var(--accent); }
+    button { font: inherit; color: inherit; }
+    [hidden] { display: none !important; }
 
     #sim-banner {
+      display: none;
+      text-align: center;
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.5px;
+      padding: 6px 16px;
       background: #1565C0;
       color: #fff;
-      font-size: 0.8rem;
+    }
+    #sim-banner.visible { display: block; }
+
+    header { background: var(--card); border-bottom: 1px solid var(--border); }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+    .header-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 0 12px; }
+    .bus-tile {
+      width: 36px; height: 36px; border-radius: 8px; background: var(--bus);
+      display: flex; align-items: center; justify-content: center; flex: none;
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 500; }
+    .spacer { flex: 1 1 auto; }
+    .small { font-size: 12px; color: var(--muted); }
+
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 500; white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .t-ok { color: var(--ok-fg); background: var(--ok-bg); } .t-ok .dot, .dot.t-ok { background: var(--ok-dot); }
+    .t-warn { color: var(--warn-fg); background: var(--warn-bg); } .t-warn .dot, .dot.t-warn { background: var(--warn-dot); }
+    .t-error { color: var(--error-fg); background: var(--error-bg); } .t-error .dot, .dot.t-error { background: var(--error-dot); }
+    .t-idle { color: var(--idle-fg); background: var(--idle-bg); } .t-idle .dot, .dot.t-idle { background: var(--idle-dot); }
+
+    nav[role="tablist"] { display: flex; flex-wrap: wrap; gap: 4px; }
+    nav[role="tablist"] button {
+      min-height: 44px; padding: 0 14px; border: none; border-bottom: 3px solid transparent;
+      background: transparent; font-weight: 500; color: var(--text-2); cursor: pointer;
+    }
+    nav[role="tablist"] button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+    .badge { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--muted); }
+    .badge.warn { color: var(--warn-fg); }
+
+    main.wrap { padding-top: 24px; padding-bottom: 32px; display: flex; flex-direction: column; gap: 20px; }
+    section[role="tabpanel"] { display: flex; flex-direction: column; gap: 20px; }
+
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
+    .card-head {
+      padding: 14px 20px; border-bottom: 1px solid var(--rule);
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+    }
+    .card-head h2 { margin: 0; font-size: 15px; font-weight: 500; flex: 1 1 auto; }
+    .card-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+    .section-label {
+      margin: 0; font-size: 13px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase; color: var(--muted);
     }
 
-    #cred-banner {
-      background: var(--red);
+    /* Overview */
+    .verdict { border-radius: 14px; padding: 20px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+    .verdict-icon {
+      width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none;
       color: #fff;
-      font-size: 0.85rem;
-      padding: 10px 16px;
     }
+    .verdict.t-ok .verdict-icon { background: var(--ok-dot); }
+    .verdict.t-warn .verdict-icon { background: var(--warn-dot); }
+    .verdict.t-error .verdict-icon { background: var(--error-dot); }
+    .verdict.t-idle .verdict-icon { background: var(--idle-dot); }
+    .verdict-text { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+    .verdict h2 { margin: 0; font-size: 21px; font-weight: 500; }
+    .verdict p { margin: 0; color: var(--text); }
 
-    #sim-banner.visible, #cred-banner.visible {
-      display: block;
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px;
+      border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text);
+      font-size: 14px; font-weight: 500; text-decoration: none; cursor: pointer;
     }
+    .btn:hover { border-color: var(--muted); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--card); }
+    .btn.small-btn { min-height: 36px; padding: 0 12px; font-size: 13px; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
 
-    details.snippet-card[open] > summary {
-      margin-bottom: 10px;
+    .steps { display: flex; flex-wrap: wrap; gap: 10px; }
+    .step {
+      flex: 1 1 180px; min-width: 0; text-align: left; display: flex; flex-direction: column; gap: 10px;
+      padding: 14px 16px 16px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+      cursor: pointer;
     }
+    .step[aria-pressed="true"] { border: 2px solid var(--accent); padding: 13px 15px 15px; }
+    .step .bar { height: 4px; border-radius: 2px; }
+    .step .bar.t-ok { background: var(--ok-dot); } .step .bar.t-warn { background: var(--warn-dot); }
+    .step .bar.t-error { background: var(--error-dot); } .step .bar.t-idle { background: var(--idle-dot); }
+    .step .pill { align-self: flex-start; font-size: 13px; }
+    .step-detail-text { font-size: 13px; color: var(--text-2); }
 
-    .snippet-body {
-      padding: 0 20px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+    .detail { padding: 20px 22px; display: flex; flex-wrap: wrap; gap: 24px; }
+    .detail-main { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+    .detail-main h2 { margin: 0; font-size: 18px; font-weight: 500; }
+    .detail-main p { margin: 0; color: var(--text-2); line-height: 1.55; }
+    .detail-main .btn { align-self: flex-start; }
+    .kv { flex: 2 1 400px; min-width: 0; margin: 0; }
+    .kv-row { display: flex; flex-wrap: wrap; gap: 2px 20px; padding: 9px 0; border-bottom: 1px solid var(--rule); }
+    .kv-row:last-child { border-bottom: none; }
+    .kv dt { flex: 0 0 170px; font-size: 13px; color: var(--muted); }
+    .kv dd { flex: 1 1 220px; margin: 0; overflow-wrap: anywhere; }
+    .kv .key { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .card-body .kv { flex: none; }
+
+    /* Today */
+    .scroll-x { overflow-x: auto; }
+    .grid-table { min-width: 1060px; }
+    .grid-row {
+      display: grid; grid-template-columns: 80px 90px 170px 150px 130px 130px minmax(160px, 1fr) 90px;
+      gap: 12px; padding: 11px 20px; border-top: 1px solid var(--rule); align-items: center;
     }
+    .grid-row.head { border-top: none; font-size: 12px; color: var(--muted); background: var(--track); }
+    .grid-row .pill { justify-self: start; }
+    .sub-note { font-size: 12px; color: var(--warn-fg); }
+    .empty { margin: 0; padding: 20px; color: var(--muted); }
 
-    .snippet-body p {
-      font-size: 0.8rem;
-      color: var(--muted);
-      line-height: 1.5;
+    /* Events */
+    .legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .swatch { width: 10px; height: 10px; border-radius: 2px; }
+    .tl { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px 12px; align-items: center; }
+    .tl-label { font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .track { position: relative; height: 30px; background: var(--track); border-radius: 6px; overflow: hidden; }
+    .track.axis { height: 16px; background: none; overflow: visible; }
+    .track.frames { height: 44px; }
+    .track.markers { height: 54px; overflow: visible; }
+    .hour { position: absolute; top: 0; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .band {
+      position: absolute; top: 3px; bottom: 3px; border-radius: 4px; border: 1px solid var(--idle-dot);
+      background: var(--card); font-size: 11px; font-weight: 500; display: flex; align-items: center;
+      justify-content: center; overflow: hidden; white-space: nowrap; color: var(--text-2);
     }
-
-    .snippet-body ol {
-      font-size: 0.8rem;
-      color: var(--muted);
-      line-height: 1.8;
-      padding-left: 20px;
+    .band.done { background: var(--band-done); }
+    .band.active { background: var(--accent); border-color: var(--accent); color: var(--card); }
+    .seg { position: absolute; top: 8px; height: 14px; border-radius: 3px; }
+    .seg.live { background: var(--ok-dot); } .seg.silent { background: var(--warn-dot); }
+    .seg.idle { background: var(--idle-dot); opacity: 0.6; } .seg.stopped { background: var(--error-dot); }
+    .fbar { position: absolute; bottom: 4px; border-radius: 2px 2px 0 0; background: var(--bar); }
+    .mark {
+      position: absolute; transform: translateX(-50%); min-width: 20px; height: 20px; padding: 0 4px;
+      border-radius: 10px; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+      background: var(--idle-bg); color: var(--text);
     }
+    .mark.warn { background: var(--warn-dot); color: #1f2328; }
+    .mark.error { background: var(--error-dot); color: #fff; }
+    .mark.auth { background: var(--accent-soft); color: var(--accent); }
+    .now-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); opacity: 0.7; }
+    .now-label { position: relative; height: 18px; margin-left: 84px; }
+    .now-label span { position: absolute; transform: translateX(-50%); font-size: 11px; font-weight: 500; color: var(--accent); white-space: nowrap; }
 
-    .snippet-wrap {
-      position: relative;
+    .chip {
+      min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--card); font-size: 13px; cursor: pointer; color: var(--text-2);
     }
+    .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+    .event { display: flex; flex-wrap: wrap; gap: 2px 16px; padding: 11px 20px; border-top: 1px solid var(--rule); align-items: baseline; }
+    .event-time { flex: 0 0 64px; font-family: var(--mono); font-size: 13px; color: var(--text-2); }
+    .event-cat { flex: 0 0 120px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .event-msg { flex: 1 1 380px; min-width: 0; overflow-wrap: anywhere; }
 
+    /* Setup */
+    .setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+    .help { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+    code { font-family: var(--mono); font-size: 12px; }
+    details > summary { cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--text-2); }
+    textarea {
+      width: 100%; min-height: 80px; padding: 10px; border: 1px solid var(--border); border-radius: 8px;
+      font-family: var(--mono); font-size: 12px; resize: vertical; background: var(--bg); color: var(--text);
+    }
+    textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    label { font-size: 13px; color: var(--text-2); }
+    form { display: flex; flex-direction: column; gap: 8px; }
+    #token-msg { font-size: 13px; padding: 8px 12px; border-radius: 8px; display: none; }
+    #token-msg.ok { display: block; color: var(--ok-fg); background: var(--ok-bg); }
+    #token-msg.warn { display: block; color: var(--error-fg); background: var(--error-bg); }
+    .snippet-body { display: flex; flex-direction: column; gap: 10px; }
+    .snippet-body ol { margin: 0; padding-left: 20px; color: var(--text-2); font-size: 13px; line-height: 1.8; }
     pre#snippet-code {
-      background: #1e1e1e;
-      color: #d4d4d4;
-      border-radius: 6px;
-      padding: 14px 14px 14px 14px;
-      font-family: "SF Mono", Menlo, monospace;
-      font-size: 0.72rem;
-      line-height: 1.5;
-      overflow-x: auto;
-      max-height: 280px;
-      white-space: pre;
-      margin: 0;
+      margin: 0; background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 12px; font-family: var(--mono);
+      font-size: 11px; line-height: 1.5; overflow: auto; max-height: 260px; white-space: pre;
     }
-
-    .snippet-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    #copy-snippet {
-      padding: 6px 14px;
-      font-size: 0.8rem;
-      background: var(--yellow);
-      border: 2px solid var(--yellow-dark);
-      border-radius: 6px;
-      color: var(--text);
-      cursor: pointer;
-      font-weight: 700;
-      align-self: flex-start;
-    }
-
-    #copy-snippet:hover {
-      background: var(--yellow-dark);
-    }
-
-    #copy-snippet.copied {
-      background: #E8F5E9;
-      border-color: #81C784;
-      color: var(--green);
-    }
-
-    #copy-msg {
-      font-size: 0.8rem;
-      color: var(--green);
-      display: none;
-    }
-
-    #copy-msg.visible {
-      display: block;
-    }
-
-    #copy-msg.error {
-      color: var(--red);
-    }
-
-    .bus-list {
-      padding: 0;
-      list-style: none;
-    }
-
-    .bus-list-empty {
-      padding: 20px;
-      text-align: center;
-      font-size: 0.82rem;
-      color: var(--muted);
-    }
-
-    .bus-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 20px;
-      border-bottom: 1px solid #f0f0f0;
-      transition: opacity 0.3s;
-    }
-
-    .bus-item:last-child {
-      border-bottom: none;
-    }
-
-    .bus-item.stale {
-      opacity: 0.4;
-    }
-
-    .bus-name {
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-
-    .bus-meta {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .bus-last-seen {
-      font-size: 0.72rem;
-      color: var(--muted);
-      min-width: 4.5em;
-      text-align: right;
-    }
-
-    .bus-meta .pill {
-      min-width: 5.5em;
-      text-align: center;
-    }
-
-    .bus-item.stale .bus-last-seen {
-      font-style: italic;
-    }
-
-    .token-wrapper {
-      background: var(--card);
-      border-radius: var(--radius);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-      overflow: hidden;
-    }
-
-    .token-wrapper > summary {
-      list-style: none;
-      cursor: pointer;
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--muted);
-      padding: 14px 20px;
-      user-select: none;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .token-wrapper > summary::-webkit-details-marker { display: none; }
-
-    .token-wrapper > summary::after {
-      content: "\25B6";
-      font-size: 0.65rem;
-      transition: transform 0.15s;
-    }
-
-    .token-wrapper[open] > summary::after {
-      transform: rotate(90deg);
-    }
-
-    .token-wrapper-content {
-      padding: 0 20px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .token-wrapper-content form {
-      padding: 0;
-    }
-
-    .snippet-help-toggle {
-      font-size: 0.78rem;
-      color: var(--blue);
-      cursor: pointer;
-      background: none;
-      border: none;
-      padding: 0;
-      font-weight: 500;
-      text-align: left;
-      align-self: flex-start;
-    }
-
-    .snippet-help-toggle:hover {
-      text-decoration: underline;
-    }
-
-    details.snippet-card > summary {
-      font-size: 0.78rem;
-      color: var(--blue);
-      cursor: pointer;
-      list-style: none;
-      padding: 0;
-      font-weight: 500;
-      user-select: none;
-    }
-
-    details.snippet-card > summary::-webkit-details-marker { display: none; }
-
-    details.snippet-card > summary::after {
-      content: "";
-    }
+    #copy-msg { font-size: 13px; color: var(--ok-fg); display: none; }
+    #copy-msg.visible { display: inline; }
+    #copy-msg.error { color: var(--error-fg); }
   </style>
 </head>
 
 <body>
   <div id="sim-banner">SIMULATION MODE — no real data</div>
   <header>
-    <span class="bus-icon">🚌</span>
-    <h1>MyRide HA Bridge</h1>
+    <div class="wrap">
+      <div class="header-row">
+        <div class="bus-tile" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1f2328" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="15" rx="2"></rect>
+            <path d="M4 11h16"></path><path d="M7 21v-3M17 21v-3"></path></svg>
+        </div>
+        <h1>MyRide Bus Bridge</h1>
+        <span id="overall-chip" class="pill t-idle"><span class="dot"></span><span>Loading…</span></span>
+        <span class="spacer"></span>
+        <span class="small" id="last-refresh">Fetching…</span>
+      </div>
+      <nav role="tablist" aria-label="Sections">
+        <button type="button" role="tab" id="tab-btn-overview" aria-controls="tab-overview" aria-selected="true" data-tab="overview">Overview</button>
+        <button type="button" role="tab" id="tab-btn-today" aria-controls="tab-today" aria-selected="false" data-tab="today">Today<span class="badge" id="badge-today"></span></button>
+        <button type="button" role="tab" id="tab-btn-events" aria-controls="tab-events" aria-selected="false" data-tab="events">Events<span class="badge" id="badge-events"></span></button>
+        <button type="button" role="tab" id="tab-btn-setup" aria-controls="tab-setup" aria-selected="false" data-tab="setup">Setup</button>
+      </nav>
+    </div>
   </header>
-  <div id="cred-banner">Credentials expired — submit a new refresh token below</div>
 
-  <main>
-    <div class="card">
-      <div class="card-title" id="bus-title">Active Buses</div>
-      <ul class="bus-list" id="bus-list">
-        <li class="bus-list-empty">No buses seen yet</li>
-      </ul>
-    </div>
+  <main class="wrap">
 
-    <div class="card">
-      <div class="card-title">Bridge Status</div>
-      <div class="status-grid">
-        <div class="status-item">
-          <label>MyRide K-12</label>
-          <span id="s-signalr" class="pill dim">—</span>
+    <!-- Overview: what's wrong (if anything), and each link from MyRide to Home Assistant -->
+    <section role="tabpanel" id="tab-overview" aria-labelledby="tab-btn-overview">
+      <div id="verdict" class="verdict t-idle">
+        <div class="verdict-icon" id="verdict-icon" aria-hidden="true"></div>
+        <div class="verdict-text">
+          <h2 id="verdict-title">Loading…</h2>
+          <p id="verdict-sub"></p>
         </div>
-        <div class="status-item">
-          <label>MQTT</label>
-          <span id="s-mqtt" class="pill dim">—</span>
+        <span id="verdict-action"></span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <h2 class="section-label">From MyRide to Home Assistant</h2>
+        <div class="steps" id="steps"></div>
+      </div>
+      <div class="card detail" id="step-detail"></div>
+    </section>
+
+    <!-- Today: every run of every student -->
+    <section role="tabpanel" id="tab-today" aria-labelledby="tab-btn-today" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2 id="today-title">Runs today</h2>
+          <span class="small" id="today-tz"></span>
         </div>
-        <div class="status-item">
-          <label>Credentials</label>
-          <span id="s-creds" class="pill dim">—</span>
+        <div id="runs"></div>
+      </div>
+    </section>
+
+    <!-- Events: day timeline + event log -->
+    <section role="tabpanel" id="tab-events" aria-labelledby="tab-btn-events" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2 id="timeline-title">Today</h2>
+          <span class="legend"><span class="swatch" style="background:var(--ok-dot)"></span>Live</span>
+          <span class="legend"><span class="swatch" style="background:var(--warn-dot)"></span>Silent</span>
+          <span class="legend"><span class="swatch" style="background:var(--idle-dot);opacity:.6"></span>Connected, nothing watched</span>
+          <span class="legend"><span class="swatch" style="background:var(--error-dot)"></span>Stopped</span>
         </div>
-        <div class="status-item">
-          <label>Token Expires</label>
-          <span id="s-expires" class="value">—</span>
+        <div class="card-body">
+          <div class="tl" id="timeline"></div>
+          <div class="now-label" id="now-label"></div>
+          <p class="help">Markers: R1 = watched buses changed, R2 = silence watchdog, R3 = MyRide server error,
+            C = connection closed, S = bridge started, ! = sign-in rejected or expired (top line); T = signed in or
+            token renewed (bottom line). Hover a marker or bar for details.</p>
         </div>
       </div>
-      <div class="refresh-note" id="last-refresh">Fetching…</div>
-    </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Event log</h2>
+          <button type="button" class="chip" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" class="chip" data-filter="problems" aria-pressed="false">Warnings and errors</button>
+          <button type="button" class="btn small-btn" id="download-diagnostics">Download diagnostics</button>
+        </div>
+        <div id="event-list"></div>
+      </div>
+    </section>
 
-    <details id="token-sections" class="card token-wrapper">
-      <summary>Token Management</summary>
-      <div class="token-wrapper-content">
-        <form id="token-form">
-          <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
-            spellcheck="false"></textarea>
-          <div id="token-msg"></div>
-          <button type="submit">Submit Token</button>
-        </form>
-        <details class="snippet-card">
-          <summary>How do I get a refresh token?</summary>
-          <div class="snippet-body">
-            <p><strong>Easier:</strong> skip the token. Enter your MyRide email and password on the
-              app's Configuration tab (or set <code>MYRIDE_EMAIL</code> and <code>MYRIDE_PASSWORD</code>)
-              and the bridge signs in itself.</p>
-            <ol>
-              <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
-              <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
-              <li>Paste the snippet below and press Enter (if pasting is blocked, type <code>allow pasting</code> first)</li>
-              <li>Copy the <strong>Refresh token</strong> it prints and paste it above</li>
-            </ol>
-            <div class="snippet-wrap">
-              <pre id="snippet-code">Loading…</pre>
-            </div>
-            <div class="snippet-actions">
-              <button id="copy-snippet" type="button">Copy to clipboard</button>
-              <span id="copy-msg"></span>
-            </div>
+    <!-- Setup: sign-in, settings in effect, Home Assistant, build -->
+    <section role="tabpanel" id="tab-setup" aria-labelledby="tab-btn-setup" hidden>
+      <div class="setup-grid">
+        <div class="card">
+          <div class="card-head"><h2>Sign-in</h2></div>
+          <div class="card-body">
+            <dl class="kv" id="signin-rows"></dl>
+            <p class="help" id="signin-help"></p>
+            <span id="signin-action"></span>
+            <details id="token-sections">
+              <summary>Advanced: use a refresh token instead</summary>
+              <form id="token-form">
+                <p class="help">Only needed if you don't want to store a password. A saved token is tried
+                  before the email and password.</p>
+                <label for="token-input">Refresh token</label>
+                <textarea id="token-input" placeholder="Paste refresh token here…" autocomplete="off"
+                  spellcheck="false"></textarea>
+                <div id="token-msg"></div>
+                <div><button type="submit" class="btn">Save token</button></div>
+              </form>
+              <details class="snippet-card">
+                <summary>How do I get a refresh token?</summary>
+                <div class="snippet-body">
+                  <ol>
+                    <li>Log in to <strong>myridek12.tylerapp.com</strong> in Chrome</li>
+                    <li>Open DevTools <kbd>F12</kbd> → Console tab</li>
+                    <li>Paste the snippet below and press Enter (if pasting is blocked, type <code>allow pasting</code> first)</li>
+                    <li>Copy the <strong>Refresh token</strong> it prints and paste it above</li>
+                  </ol>
+                  <pre id="snippet-code">Loading…</pre>
+                  <div><button id="copy-snippet" type="button" class="btn small-btn">Copy to clipboard</button>
+                    <span id="copy-msg"></span></div>
+                </div>
+              </details>
+            </details>
           </div>
-        </details>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Settings in effect</h2></div>
+          <div class="card-body">
+            <dl class="kv" id="options-rows"></dl>
+            <p class="help" id="options-help"></p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Home Assistant</h2></div>
+          <div class="card-body">
+            <dl class="kv" id="ha-rows"></dl>
+            <span id="ha-action"></span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Build</h2></div>
+          <div class="card-body">
+            <span id="app-version"></span>
+            <p class="help">Status JSON: <a href="status" target="_blank" rel="noopener">status</a> ·
+              full logs: <span id="logs-where">the bridge's console output</span></p>
+          </div>
+        </div>
       </div>
-    </details>
+    </section>
   </main>
 
-  <footer class="app-footer" id="app-version"></footer>
-
   <script>
+    // All fetches are relative ('status', not '/status'): under Home Assistant's
+    // ingress the page lives below a per-session path prefix.
     const $ = id => document.getElementById(id);
+    const MQTT_DEVICES_URL = '/config/integrations/integration/mqtt';
+    const ICONS = {
+      ok: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+      warn: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 6v8"/><path d="M12 18h.01"/></svg>',
+      error: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M7 7l10 10M17 7L7 17"/></svg>',
+      idle: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 7v5l3 2"/></svg>',
+    };
 
-    function setPill(id, ok, label) {
-      const el = $(id);
-      el.textContent = label;
-      el.className = 'pill ' + (ok ? 'ok' : 'warn');
-    }
-
-    function fmt(iso) {
-      if (!iso) return '—';
-      const d = new Date(iso);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    function timeAgo(iso) {
-      if (!iso) return '';
-      const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-      if (diff < 0) return 'just now';
-      if (diff < 60) return diff + 's ago';
-      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-      return Math.floor(diff / 86400) + 'd ago';
-    }
-
-    const STALE_SECONDS = 300; // 5 minutes
-    let lastBuses = [];
-    let lastTokenExpiresAt = null;
-    let lastTokenExpired = false;
+    let lastStatus = null;
+    let activeTab = 'overview';
+    let selectedStep = null;      // step id the user clicked, if any
+    let eventFilter = 'all';
+    let tokenFormOpenedForSetup = false;
     let snippetShownForSetup = false;
 
-    function formatTokenExpiry(expiresAt, tokenExpired) {
-      const el = $('s-expires');
-      if (!expiresAt || tokenExpired) {
-        el.textContent = tokenExpired ? 'Expired' : '\u2014';
-        el.className = 'value' + (tokenExpired ? ' token-expiry-danger' : '');
-        return;
-      }
-      const diffSec = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000);
-      if (diffSec <= 0) {
-        el.textContent = 'Expired';
-        el.className = 'value token-expiry-danger';
-        return;
-      }
-      let text;
-      if (diffSec < 60) text = 'in ' + diffSec + 's';
-      else if (diffSec < 3600) text = 'in ' + Math.floor(diffSec / 60) + ' min';
-      else {
-        const h = Math.floor(diffSec / 3600);
-        const m = Math.floor((diffSec % 3600) / 60);
-        text = 'in ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
-      }
-      el.textContent = text;
-      if (diffSec > 1800) el.className = 'value token-expiry-ok';
-      else if (diffSec > 600) el.className = 'value token-expiry-warn';
-      else el.className = 'value token-expiry-danger';
+    // ── Formatting ────────────────────────────────────────────────────────
+
+    function esc(v) {
+      return String(v == null ? '' : v).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     }
 
-    function renderBuses(buses) {
-      lastBuses = buses || [];
-      const list = $('bus-list');
-      const title = $('bus-title');
-      if (lastBuses.length === 0) {
-        title.textContent = 'Active Buses';
-        list.innerHTML = '<li class="bus-list-empty">No buses seen yet</li>';
-        return;
-      }
-      const now = Date.now();
-      const activeCount = lastBuses.filter(b => (now - new Date(b.lastSeen).getTime()) / 1000 < STALE_SECONDS).length;
-      title.textContent = 'Active Buses (' + activeCount + ')';
-      list.innerHTML = lastBuses.map(b => {
-        const ageSec = (now - new Date(b.lastSeen).getTime()) / 1000;
-        const stale = ageSec >= STALE_SECONDS;
-        const pillClass = stale ? 'dim' : (b.moving ? 'ok' : 'info');
-        const pillLabel = stale ? 'Stale' : (b.moving ? 'Moving' : 'Stopped');
-        return '<li class="bus-item' + (stale ? ' stale' : '') + '" data-lastseen="' + b.lastSeen + '" data-moving="' + (b.moving ? '1' : '0') + '">' +
-          '<span class="bus-name">' + b.name + '</span>' +
-          '<span class="bus-meta">' +
-            '<span class="bus-last-seen">' + timeAgo(b.lastSeen) + '</span>' +
-            '<span class="pill ' + pillClass + '">' + pillLabel + '</span>' +
-          '</span>' +
-        '</li>';
-      }).join('');
+    function tz() {
+      return (lastStatus && lastStatus.timeZone) || undefined;
     }
 
-    function tickBusTimes() {
-      const items = document.querySelectorAll('.bus-item[data-lastseen]');
-      if (!items.length) return;
-      const now = Date.now();
-      let activeCount = 0;
-      items.forEach(li => {
-        const lastSeen = li.getAttribute('data-lastseen');
-        const moving = li.getAttribute('data-moving') === '1';
-        const ageSec = (now - new Date(lastSeen).getTime()) / 1000;
-        const stale = ageSec >= STALE_SECONDS;
-        if (!stale) activeCount++;
-        li.className = 'bus-item' + (stale ? ' stale' : '');
-        li.querySelector('.bus-last-seen').textContent = timeAgo(lastSeen);
-        const pill = li.querySelector('.pill');
-        pill.className = 'pill ' + (stale ? 'dim' : (moving ? 'ok' : 'info'));
-        pill.textContent = stale ? 'Stale' : (moving ? 'Moving' : 'Stopped');
+    // Wall-clock time of an instant in the district time zone.
+    function fmtTime(iso, withSeconds) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      if (isNaN(d)) return '—';
+      const opts = { hour: 'numeric', minute: '2-digit', timeZone: tz() };
+      if (withSeconds) opts.second = '2-digit';
+      try { return d.toLocaleTimeString([], opts); } catch { delete opts.timeZone; return d.toLocaleTimeString([], opts); }
+    }
+
+    // A district-local "HH:MM" (from the schedule) in the viewer's time style.
+    function fmtClock(hhmm) {
+      if (!hhmm) return '—';
+      const [h, m] = hhmm.split(':').map(Number);
+      return new Date(Date.UTC(2000, 0, 1, h, m)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+    }
+
+    function ago(iso) {
+      if (!iso) return 'never';
+      const sec = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+      if (sec < 5) return 'just now';
+      if (sec < 60) return sec + ' s ago';
+      if (sec < 3600) return Math.floor(sec / 60) + ' min ago';
+      if (sec < 86400) return Math.floor(sec / 3600) + ' h ' + Math.floor((sec % 3600) / 60) + ' min ago';
+      return Math.floor(sec / 86400) + ' d ago';
+    }
+
+    function minutesSince(ms) {
+      return ms == null ? null : Math.floor((Date.now() - ms) / 60000);
+    }
+
+    function plural(n, word, many) {
+      return n + ' ' + (n === 1 ? word : many || word + 's');
+    }
+
+    function isoOf(ms) {
+      return ms ? new Date(ms).toISOString() : null;
+    }
+
+    // Replace an element's markup only when it changed, keeping focus on the same
+    // control (the page re-renders every few seconds).
+    function setHTML(el, html) {
+      if (el.dataset.html === html) return;
+      const focused = document.activeElement;
+      const key = focused && el.contains(focused) && (focused.dataset.step || focused.dataset.goto);
+      el.innerHTML = html;
+      el.dataset.html = html;
+      if (key) {
+        const again = el.querySelector('[data-step="' + key + '"], [data-goto="' + key + '"]');
+        if (again) again.focus();
+      }
+    }
+
+    // Minutes since midnight in the district time zone, and that day's date.
+    function districtParts(iso) {
+      const d = new Date(iso);
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz(), hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        }).formatToParts(d);
+        const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+        return { date: p.year + '-' + p.month + '-' + p.day, minutes: Number(p.hour) * 60 + Number(p.minute) };
+      } catch {
+        return { date: d.toDateString(), minutes: d.getHours() * 60 + d.getMinutes() };
+      }
+    }
+
+    function clockMinutes(hhmm) {
+      if (!hhmm) return null;
+      const [h, m] = hhmm.split(':').map(Number);
+      return h * 60 + m;
+    }
+
+    function pill(tone, label) {
+      return '<span class="pill t-' + tone + '"><span class="dot"></span>' + esc(label) + '</span>';
+    }
+
+    function kvRows(rows) {
+      return rows.map(r =>
+        '<div class="kv-row"><dt>' + esc(r[0]) + (r[2] ? '<span class="key">' + esc(r[2]) + '</span>' : '') +
+        '</dt><dd>' + esc(r[1]) + '</dd></div>').join('');
+    }
+
+    // ── Where things are configured (add-on options vs environment) ───────
+
+    function isAddon(s) { return s.runtime === 'addon'; }
+
+    function configLink(s, label) {
+      if (isAddon(s) && s.configUrl) {
+        return '<a class="btn primary" href="' + esc(s.configUrl) + '" target="_top">' + esc(label || 'Open Configuration tab') + '</a>';
+      }
+      return '';
+    }
+
+    function credentialsWhere(s) {
+      return isAddon(s)
+        ? 'the myride_email and myride_password options on the add-on’s Configuration tab'
+        : 'the MYRIDE_EMAIL and MYRIDE_PASSWORD environment variables';
+    }
+
+    function applyWhere(s) {
+      return isAddon(s) ? 'Saving there restarts the add-on.' : 'Restart the container after changing them.';
+    }
+
+    // ── Steps: MyRide sign-in → students → stream → MQTT → Home Assistant ──
+
+    const METHOD_LABELS = {
+      password: 'Email and password',
+      'refresh-token': 'Refresh token',
+      'access-token': 'Access token (no renewal)',
+      simulated: 'Simulated',
+    };
+
+    function signInStep(s) {
+      const si = s.signIn || {};
+      const rejected = s.login && s.login.rejected;
+      const method = METHOD_LABELS[si.method] || 'Not configured';
+      const rows = [['Method', method]];
+      if (si.renewedAt) rows.push(['Access token', 'Renewed ' + fmtTime(si.renewedAt) + (si.nextRenewalAt ? ' · next ' + fmtTime(si.nextRenewalAt) : '')]);
+      else if (s.tokenExpiresAt && !s.tokenExpired) rows.push(['Access token', 'Expires ' + fmtTime(s.tokenExpiresAt)]);
+      if (si.method === 'password') rows.push(['Refresh token', 'Kept in memory, not saved to disk']);
+      if (si.tenant) rows.push(['District', (si.tenant.source === 'configured' ? 'Set in the configuration · ' : 'Detected from sign-in · ') + si.tenant.id]);
+      const step = { id: 'signin', name: 'MyRide sign-in', rows };
+      if (s.simulate) {
+        return Object.assign(step, { tone: 'ok', state: 'Simulated', detail: 'No MyRide sign-in in simulation mode', explain: 'Simulation mode uses made-up buses and students.' });
+      }
+      if (s.tokenMissing) {
+        return Object.assign(step, {
+          tone: 'error', state: 'Not set up', detail: 'No email and password or token',
+          explain: 'Set ' + credentialsWhere(s) + '. ' + applyWhere(s) + ' Or paste a refresh token on the Setup tab.',
+          action: configLink(s) || '<button type="button" class="btn primary" data-goto="setup">Go to Setup</button>',
+        });
+      }
+      if (rejected) {
+        rows.push(['MyRide said', rejected], ['Retries', 'Paused, so the MyRide account doesn’t get locked']);
+        return Object.assign(step, {
+          tone: 'error', state: 'Rejected', detail: 'MyRide rejected the email and password' + (si.rejectedAt ? ' at ' + fmtTime(si.rejectedAt) : ''),
+          explain: 'Correct ' + credentialsWhere(s) + '. ' + applyWhere(s) + ' A refresh token pasted on the Setup tab also works.',
+          action: configLink(s),
+        });
+      }
+      if (s.tokenExpired) {
+        return Object.assign(step, {
+          tone: 'error', state: 'Expired', detail: 'The refresh token no longer works',
+          explain: 'Set ' + credentialsWhere(s) + ' so the bridge can sign in itself, or paste a new refresh token on the Setup tab (no restart needed).',
+          action: '<button type="button" class="btn primary" data-goto="setup">Go to Setup</button>',
+        });
+      }
+      if (!si.renewedAt && !s.tokenExpiresAt) {
+        return Object.assign(step, { tone: 'idle', state: 'Signing in', detail: method, explain: 'The bridge is signing in to MyRide.' });
+      }
+      return Object.assign(step, {
+        tone: 'ok', state: 'Signed in',
+        detail: method + (si.renewedAt ? ' · renewed ' + ago(si.renewedAt) : ''),
+        explain: si.method === 'password'
+          ? 'The bridge signs in with ' + credentialsWhere(s) + ' and renews its access token every 50 minutes.'
+          : si.method === 'access-token'
+            ? 'A raw access token expires after an hour. Set ' + credentialsWhere(s) + ' for continuous operation.'
+            : 'The bridge renews its access token from the refresh token every 50 minutes.',
       });
-      $('bus-title').textContent = 'Active Buses (' + activeCount + ')';
-      formatTokenExpiry(lastTokenExpiresAt, lastTokenExpired);
     }
 
-    setInterval(tickBusTimes, 1000);
+    function credentialsProblem(s) {
+      return s.tokenMissing || s.tokenExpired;
+    }
+
+    function activeRuns(s) {
+      const out = [];
+      for (const st of s.students || []) {
+        for (const r of st.runs) if (r.current && r.state === 'active') out.push({ student: st, run: r });
+      }
+      return out;
+    }
+
+    function nextRun(s) {
+      let best = null;
+      for (const st of s.students || []) {
+        for (const r of st.runs) {
+          if (r.state === 'upcoming' && (!best || clockMinutes(r.windowStart) < clockMinutes(best.run.windowStart))) best = { student: st, run: r };
+        }
+      }
+      return best;
+    }
+
+    function rosterStep(s) {
+      const students = s.students || [];
+      const roster = s.roster || {};
+      const step = { id: 'roster', name: 'Students and runs', rows: [] };
+      if (!roster.lastPollAt) {
+        return Object.assign(step, credentialsProblem(s)
+          ? { tone: 'idle', state: 'Waiting', detail: 'Loads after sign-in', explain: 'Student and run data loads once the bridge has signed in.', rows: [['Students', 'Not loaded']] }
+          : { tone: 'idle', state: 'Loading', detail: 'First poll in progress', explain: 'The bridge is fetching students and today’s runs from MyRide.', rows: [['Students', 'Not loaded yet']] });
+      }
+      const active = activeRuns(s);
+      const next = nextRun(s);
+      const subs = [];
+      for (const st of students) for (const r of st.runs) if (r.current && r.substitute) subs.push(r.bus + ' replaces ' + r.regularBus + ' for ' + st.name);
+      step.rows = [
+        ['Students', students.map(st => st.name).join(', ') || 'None'],
+        ['Current runs', active.map(a => a.run.period + ' ' + a.run.runId + ' on ' + a.run.bus).join(' · ') || 'None right now'],
+        ['Substitutes', subs.join(' · ') || 'None'],
+        ['Last poll', fmtTime(roster.lastPollAt) + (roster.pollMinutes ? ' (every ' + roster.pollMinutes + ' min)' : '')],
+        ['District time', fmtTime(new Date().toISOString()) + ', ' + (s.timeZone || '')],
+      ];
+      step.explain = 'Each poll picks every student’s current run from today’s schedule, in the district time zone. A wrong time zone shows up here as the wrong run. The Today tab lists every run.';
+      if (students.length === 0) {
+        return Object.assign(step, { tone: 'warn', state: 'No students', detail: 'MyRide returned no students for this account' });
+      }
+      const detail = active.length
+        ? active[0].run.period + ' run' + (active.length > 1 ? 's' : '') + ' in progress · polled ' + ago(roster.lastPollAt)
+        : next ? 'Next run ' + fmtClock(next.run.windowStart) + ' · polled ' + ago(roster.lastPollAt)
+          : 'No more runs today · polled ' + ago(roster.lastPollAt);
+      return Object.assign(step, { tone: 'ok', state: plural(students.length, 'student'), detail });
+    }
+
+    function streamStep(s) {
+      const st = s.stream || {};
+      const step = { id: 'stream', name: 'Position stream', rows: [] };
+      if (credentialsProblem(s) && !s.signalrConnected) {
+        return Object.assign(step, { tone: 'idle', state: 'Stopped', detail: 'Starts after sign-in', explain: 'The position stream needs a signed-in session.', rows: [['Connection', 'Not running']] });
+      }
+      const watching = (st.watchedBuses || []).join(', ') || 'Nothing';
+      step.rows = [
+        ['Connected', st.connectedSinceMs ? 'Since ' + fmtTime(isoOf(st.connectedSinceMs)) + (st.connectionReason ? ' (reason: ' + st.connectionReason + ')' : '') : 'Not yet'],
+        ['Watching', watching],
+        ['Last watched frame', st.lastWatchedFrameMs ? fmtTime(isoOf(st.lastWatchedFrameMs), true) + ' (' + ago(isoOf(st.lastWatchedFrameMs)) + ')' : 'None yet'],
+        ['Frames, last full hour', st.framesLastHour ? st.framesLastHour.watched + ' watched of ' + st.framesLastHour.total : 'Not counted yet'],
+        ['Reconnects', String(st.reconnects || 0) + (st.lastReconnectReason ? ' · last ' + st.lastReconnectReason + ' at ' + fmtTime(isoOf(st.lastReconnectMs)) : '')],
+        ['Last server error', st.lastServerError ? st.lastServerError.method + ' at ' + fmtTime(isoOf(st.lastServerError.atMs)) : 'None'],
+      ];
+      step.explain = 'MyRide decides which buses a connection receives at the moment it connects. The bridge reconnects when the watched buses change, or when a watched bus is silent for the stream silence limit. The Events tab shows today’s history.';
+      if (!s.signalrConnected) {
+        return Object.assign(step, { tone: 'warn', state: 'Disconnected', detail: 'Reconnecting to MyRide' });
+      }
+      if (!st.expected) {
+        return Object.assign(step, { tone: 'idle', state: 'Nothing to watch', detail: 'Connected · no student is on a bus now' });
+      }
+      if (st.live) {
+        const lastFrame = isoOf(st.lastWatchedFrameMs || st.connectedSinceMs);
+        return Object.assign(step, {
+          tone: 'ok', state: 'Live',
+          detail: (lastFrame ? 'Last frame ' + ago(lastFrame) + ' · ' : '') + plural((st.watchedBuses || []).length, 'bus', 'buses'),
+        });
+      }
+      const since = Math.max(st.lastWatchedFrameMs || 0, st.connectedSinceMs || 0) || null;
+      const mins = minutesSince(since);
+      step.explain = 'MyRide can keep a connection open while sending nothing for a bus. The bridge reconnects automatically, spacing attempts 0, 5, 10 and 15 minutes apart. If it stays silent for a whole run, check whether the bus shows in the MyRide app, which reads the same feed.';
+      return Object.assign(step, { tone: 'warn', state: 'Silent' + (mins != null ? ' ' + mins + ' min' : ''), detail: 'Connected · no frames from ' + watching });
+    }
+
+    function mqttStep(s) {
+      const m = s.mqtt;
+      const step = { id: 'mqtt', name: 'MQTT broker', rows: [] };
+      if (!m) {
+        return Object.assign(step, {
+          tone: s.mqttConnected ? 'ok' : 'idle', state: s.mqttConnected ? 'Connected' : 'Not started',
+          detail: s.simulate ? 'No MQTT_BROKER set' : 'Starts after sign-in',
+          explain: s.simulate ? 'Simulation mode runs without MQTT unless MQTT_BROKER is set.' : 'The bridge connects to MQTT once it has signed in to MyRide.',
+          rows: [['Broker', 'Not connected']],
+        });
+      }
+      step.rows = [
+        ['Broker', m.broker + ':' + m.port + (isAddon(s) ? ' (Supervisor service)' : '')],
+        ['Bridge availability', m.connected ? 'online' : 'offline'],
+        ['Last publish', m.lastPublishAt ? fmtTime(m.lastPublishAt, true) : 'None yet'],
+      ];
+      step.explain = (isAddon(s) ? 'The broker comes from the Supervisor’s MQTT service. ' : 'The broker is MQTT_BROKER and MQTT_PORT. ') +
+        'If the bridge disconnects, its last will marks every entity unavailable.';
+      return Object.assign(step, m.connected
+        ? { tone: 'ok', state: 'Connected', detail: m.broker + ':' + m.port }
+        : { tone: 'error', state: 'Disconnected', detail: 'Can’t reach ' + m.broker + ':' + m.port });
+    }
+
+    function haStep(s) {
+      const ha = s.homeAssistant;
+      const step = { id: 'ha', name: 'HA discovery', rows: [] };
+      if (!ha) {
+        return Object.assign(step, { tone: 'idle', state: 'Waiting', detail: 'Needs MQTT', explain: 'Entities are published to Home Assistant through MQTT discovery.', rows: [['Entities', 'None published yet']] });
+      }
+      const seen = ha.haStatus && ha.haStatus.at
+        ? fmtTime(ha.haStatus.at) + ' (MQTT birth message' + (ha.haStatus.state !== 'online' ? ': ' + ha.haStatus.state : '') + ')'
+        : 'Not seen since the bridge started at ' + fmtTime(s.startedAt);
+      const check = ha.entityCheck;
+      step.rows = [
+        ['Devices', String(ha.devices)],
+        ['Entities published', String(ha.entities)],
+        ['HA last seen online', seen],
+        isAddon(s)
+          ? ['Entities found in HA', !check ? 'Not checked yet' : check.error ? 'Check failed: ' + check.error : check.found + ' of ' + check.expected + ' (checked ' + fmtTime(check.checkedAt) + ')']
+          : ['Entity check', 'Not available when standalone'],
+        ['Credentials sensor', ha.credentialsProblem ? 'on' : 'off'],
+      ];
+      step.explain = 'Discovery configs are retained, so Home Assistant rebuilds the devices after a restart. ' + (isAddon(s)
+        ? 'As an add-on, the bridge also asks Home Assistant through the Supervisor whether the entities exist.'
+        : 'Running standalone, the bridge can’t reach Home Assistant’s API, so it can’t confirm the entities exist. It only sees the birth message Home Assistant’s MQTT integration posts when it starts.');
+      if (isAddon(s)) step.action = '<a class="btn" href="' + MQTT_DEVICES_URL + '" target="_top">Open MQTT devices in Home Assistant</a>';
+      if (ha.credentialsProblem) {
+        return Object.assign(step, { tone: 'error', state: 'Problem reported', detail: 'Credentials sensor is on' });
+      }
+      if (check && !check.error && check.found < check.expected) {
+        return Object.assign(step, { tone: 'warn', state: check.found + ' of ' + check.expected + ' found', detail: 'Home Assistant is missing some entities' });
+      }
+      const silentStudents = activeRuns(s).filter(a => a.student.live.feedLive === false).map(a => a.student.name);
+      if (silentStudents.length) {
+        step.rows.push(['Feed live', 'off for ' + silentStudents.join(' and ')]);
+        return Object.assign(step, { tone: 'warn', state: 'Feed live off', detail: silentStudents.join(' and ') + ' show feed live: off' });
+      }
+      const detail = isAddon(s) && check && !check.error
+        ? check.found + ' of ' + check.expected + ' entities found in HA'
+        : ha.entities + ' entities published' + (ha.haStatus && ha.haStatus.at ? ' · HA seen ' + fmtTime(ha.haStatus.at) : '');
+      return Object.assign(step, { tone: 'ok', state: plural(ha.devices, 'device'), detail });
+    }
+
+    function computeSteps(s) {
+      return [signInStep(s), rosterStep(s), streamStep(s), mqttStep(s), haStep(s)];
+    }
+
+    function computeVerdict(s, steps) {
+      const bad = steps.find(x => x.tone === 'error') || steps.find(x => x.tone === 'warn');
+      if (bad) {
+        if (bad.id === 'signin') {
+          return {
+            tone: 'error',
+            chip: 'Action needed',
+            title: s.tokenMissing ? 'Set up the MyRide sign-in'
+              : (s.login && s.login.rejected) ? 'Action needed: MyRide rejected the email and password'
+                : 'Action needed: the MyRide sign-in expired',
+            sub: s.tokenMissing ? 'Add your MyRide email and password (' + credentialsWhere(s) + '), or paste a refresh token on the Setup tab.'
+              : (s.login && s.login.rejected) ? 'Tracking is stopped. So the MyRide account doesn’t get locked, the bridge won’t try these credentials again until they change.'
+                : 'Tracking is stopped until the bridge gets a working sign-in.',
+            action: bad.action,
+          };
+        }
+        if (bad.id === 'stream' && bad.tone === 'warn') {
+          return {
+            tone: 'warn', chip: 'Positions stalled',
+            title: bad.state === 'Disconnected' ? 'Reconnecting to MyRide' : 'Positions stalled' + (bad.state.match(/\d+/) ? ' for ' + bad.state.match(/\d+/)[0] + ' minutes' : ''),
+            sub: bad.state === 'Disconnected' ? 'The connection to MyRide dropped. The bridge is reconnecting on its own.'
+              : 'The connection to MyRide is open, but the watched buses have sent nothing. The bridge is reconnecting on its own.',
+            action: '<button type="button" class="btn" data-goto="events">See what happened</button>',
+          };
+        }
+        return {
+          tone: bad.tone, chip: bad.tone === 'error' ? 'Action needed' : 'Check ' + bad.name,
+          title: bad.name + ': ' + bad.state, sub: bad.detail,
+          action: bad.action || '<button type="button" class="btn" data-goto="events">See what happened</button>',
+        };
+      }
+      const students = s.students || [];
+      if (!s.roster || !s.roster.lastPollAt) {
+        return { tone: 'idle', chip: 'Starting', title: 'Starting up', sub: 'Signing in and loading today’s runs.' };
+      }
+      const live = (s.stream && s.stream.live) ? (s.stream.watchedBuses || []) : [];
+      const next = nextRun(s);
+      return {
+        tone: 'ok', chip: 'Working',
+        title: 'Working: tracking ' + plural(students.length, 'student'),
+        sub: (live.length ? live.join(' and ') + (live.length === 1 ? ' is' : ' are') + ' sending positions. ' : 'No bus is on a run right now. ') +
+          (next ? 'Next: ' + next.run.period + ' run at ' + fmtClock(next.run.windowStart) + '.' : ''),
+      };
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────
+
+    function renderOverview(s, steps) {
+      const v = computeVerdict(s, steps);
+      $('verdict').className = 'verdict t-' + v.tone;
+      setHTML($('verdict-icon'), ICONS[v.tone]);
+      $('verdict-title').textContent = v.title;
+      $('verdict-sub').textContent = v.sub || '';
+      setHTML($('verdict-action'), v.action || '');
+      const chip = $('overall-chip');
+      chip.className = 'pill t-' + v.tone;
+      chip.innerHTML = '<span class="dot"></span><span>' + esc(v.chip) + '</span>';
+
+      const firstProblem = steps.find(x => x.tone === 'error') || steps.find(x => x.tone === 'warn');
+      const selId = selectedStep || (firstProblem ? firstProblem.id : 'stream');
+      setHTML($('steps'), steps.map((st, i) =>
+        '<button type="button" class="step" data-step="' + st.id + '" aria-pressed="' + (st.id === selId) + '">' +
+        '<span class="bar t-' + st.tone + '"></span>' +
+        '<span class="small">' + (i + 1) + '&nbsp; ' + esc(st.name) + '</span>' +
+        pill(st.tone, st.state) +
+        '<span class="step-detail-text">' + esc(st.detail || '') + '</span></button>').join(''));
+
+      const sel = steps.find(x => x.id === selId) || steps[0];
+      setHTML($('step-detail'),
+        '<div class="detail-main"><span class="small">Step ' + (steps.indexOf(sel) + 1) + ' details</span>' +
+        '<h2>' + esc(sel.name) + '</h2><p>' + esc(sel.explain || '') + '</p>' + (sel.action || '') + '</div>' +
+        '<dl class="kv">' + kvRows(sel.rows) + '</dl>');
+    }
+
+    function renderToday(s) {
+      const students = s.students || [];
+      try {
+        $('today-title').textContent = 'Runs today · ' + new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', timeZone: tz() });
+      } catch { $('today-title').textContent = 'Runs today'; }
+      $('today-tz').textContent = 'Times are district-local (' + (s.timeZone || '') + ')';
+      const rows = [];
+      for (const st of students) {
+        for (const r of st.runs) {
+          let tone = 'idle', status = 'Upcoming', progress = '—', snap = '—';
+          const l = st.live;
+          // The window is the student's own stops, so the bus is often on its way
+          // before it opens: show live progress whenever the current run's bus reports.
+          const tracking = r.current && r.state !== 'done' && (r.state === 'active' || l.feedLive === true);
+          if (r.state === 'done') status = 'Done';
+          if (r.state === 'active') { tone = 'ok'; status = 'In progress'; }
+          if (tracking) {
+            tone = 'ok';
+            status = r.state === 'active' ? 'In progress' : 'On its way';
+            if (l.feedLive === false) { tone = 'warn'; status = 'No fixes' + (l.lastFixAt ? ' since ' + fmtTime(l.lastFixAt) : ''); }
+            const parts = [];
+            if (l.stopsAway != null) parts.push(plural(l.stopsAway, 'stop') + ' away');
+            if (l.etaMinutes != null) parts.push('ETA ' + l.etaMinutes + ' min');
+            if (l.delayMinutes != null) parts.push(l.delayMinutes === 0 ? 'on time' : Math.abs(l.delayMinutes) + ' min ' + (l.delayMinutes > 0 ? 'late' : 'early'));
+            progress = parts.join(' · ') || (l.feedLive === false ? 'Waiting for fixes' : 'Waiting for a route fix');
+            snap = l.routeSnap === true ? 'On route' : l.routeSnap === false ? 'Off route' : '—';
+          }
+          rows.push('<div class="grid-row">' +
+            '<span><strong>' + esc(st.name) + '</strong></span>' +
+            '<span>' + esc(r.period + ' · ' + r.runId) + '</span>' +
+            '<span>' + esc(r.bus || '—') + (r.substitute ? ' <span class="sub-note">sub for ' + esc(r.regularBus) + '</span>' : '') + '</span>' +
+            '<span>' + esc(fmtClock(r.windowStart) + '–' + fmtClock(r.windowEnd)) + '</span>' +
+            '<span>' + esc(r.myStopTime ? fmtClock(r.myStopTime) + (r.myStopAction ? ' ' + r.myStopAction.toLowerCase() : '') : '—') + '</span>' +
+            pill(tone, status) +
+            '<span>' + esc(progress) + '</span>' +
+            '<span>' + esc(snap) + '</span></div>');
+        }
+      }
+      const runCount = rows.length;
+      $('badge-today').textContent = runCount ? plural(runCount, 'run') : '';
+      if (!runCount) {
+        setHTML($('runs'), '<p class="empty">' + esc(s.roster && s.roster.lastPollAt
+          ? 'No runs today for ' + (students.map(x => x.name).join(', ') || 'this account') + '.'
+          : 'No run data yet. It loads after the bridge signs in to MyRide.') + '</p>');
+        return;
+      }
+      setHTML($('runs'), '<div class="scroll-x"><div class="grid-table">' +
+        '<div class="grid-row head"><span>Student</span><span>Run</span><span>Bus</span><span>Window</span><span>Stop time</span><span>Status</span><span>Live progress</span><span>Route snap</span></div>' +
+        rows.join('') + '</div></div>');
+    }
+
+    const MARKER_CLASS = { R1: '', R2: 'warn', R3: 'warn', C: 'warn', T: 'auth', S: '', '!': 'error' };
+    const BOTTOM_MARKERS = new Set(['T']);
+
+    function renderTimeline(s) {
+      const nowIso = new Date().toISOString();
+      const today = districtParts(nowIso);
+      const nowMin = today.minutes;
+      const onToday = iso => districtParts(iso).date === today.date;
+      const minuteOf = iso => districtParts(iso).minutes;
+
+      // Window: at least 6 AM–4 PM, widened to cover today's runs and now.
+      let start = 6 * 60, end = 16 * 60;
+      for (const st of s.students || []) for (const r of st.runs) {
+        const a = clockMinutes(r.windowStart), b = clockMinutes(r.windowEnd);
+        if (a != null) start = Math.min(start, a - 30);
+        if (b != null) end = Math.max(end, b + 30);
+      }
+      start = Math.min(start, nowMin - 30);
+      end = Math.max(end, nowMin + 30);
+      start = Math.max(0, Math.floor(start / 60) * 60);
+      end = Math.min(24 * 60, Math.ceil(end / 60) * 60);
+      const span = end - start;
+      const pct = m => (Math.max(0, Math.min(span, m - start)) / span * 100).toFixed(2) + '%';
+      const width = (a, b) => (Math.max(0, Math.min(end, b) - Math.max(start, a)) / span * 100).toFixed(2) + '%';
+
+      try {
+        $('timeline-title').textContent = 'Today, ' + fmtClock(String(start / 60).padStart(2, '0') + ':00') + ' to ' + fmtClock(String((end / 60) % 24).padStart(2, '0') + ':00');
+      } catch { /* keep the default title */ }
+
+      const html = [];
+      // Hour axis
+      html.push('<span></span><div class="track axis">');
+      const step = span > 12 * 60 ? 120 : 60;
+      for (let m = start; m <= end; m += step) {
+        const label = new Date(Date.UTC(2000, 0, 1, (m / 60) % 24)).toLocaleTimeString([], { hour: 'numeric', timeZone: 'UTC' });
+        html.push('<span class="hour" style="left:' + pct(m) + '">' + esc(label) + '</span>');
+      }
+      html.push('</div>');
+
+      const nowLine = '<span class="now-line" style="left:' + pct(nowMin) + '"></span>';
+
+      // One lane per student
+      for (const st of s.students || []) {
+        html.push('<span class="tl-label" title="' + esc(st.name) + '">' + esc(st.name) + '</span><div class="track">');
+        for (const r of st.runs) {
+          const a = clockMinutes(r.windowStart), b = clockMinutes(r.windowEnd);
+          if (a == null || b == null) continue;
+          const cls = r.state === 'active' ? 'active' : r.state === 'done' ? 'done' : '';
+          const title = r.period + ' run ' + r.runId + ' · ' + (r.bus || '') + (r.substitute ? ' (sub for ' + r.regularBus + ')' : '') + ' · ' + fmtClock(r.windowStart) + '–' + fmtClock(r.windowEnd);
+          html.push('<span class="band ' + cls + '" style="left:' + pct(a) + ';width:' + width(a, Math.max(b, a + 1)) + '" title="' + esc(title) + '">' + esc(r.period + ' ' + (r.bus || '').replace(/^BUS\s*/i, '')) + '</span>');
+        }
+        html.push(nowLine + '</div>');
+      }
+
+      // Stream state
+      const tl = s.timeline || { segments: [], frames: [], bucketMinutes: 10 };
+      html.push('<span class="tl-label">Stream</span><div class="track">');
+      const stateLabel = { live: 'Live', silent: 'Silent', idle: 'Connected, nothing watched', stopped: 'Stopped' };
+      for (const seg of tl.segments) {
+        if (!onToday(seg.end)) continue;
+        const a = onToday(seg.start) ? minuteOf(seg.start) : 0;
+        const b = Math.max(minuteOf(seg.end), a + 1);
+        html.push('<span class="seg ' + esc(seg.state) + '" style="left:' + pct(a) + ';width:' + width(a, b) + '" title="' + esc(fmtTime(seg.start) + '–' + fmtTime(seg.end) + ' ' + (stateLabel[seg.state] || seg.state)) + '"></span>');
+      }
+      html.push(nowLine + '</div>');
+
+      // Frames per bucket
+      const bucket = tl.bucketMinutes || 10;
+      const todays = tl.frames.filter(f => onToday(f.start));
+      const max = Math.max(1, ...todays.map(f => f.count));
+      html.push('<span class="tl-label">Frames</span><div class="track frames">');
+      for (const f of todays) {
+        const a = minuteOf(f.start);
+        const h = Math.max(2, Math.round(f.count / max * 34));
+        html.push('<span class="fbar" style="left:' + pct(a + 1) + ';width:calc(' + width(a, a + bucket) + ' - 2px);height:' + h + 'px" title="' + esc(fmtTime(f.start) + ': ' + f.count + ' frames from watched buses') + '"></span>');
+      }
+      html.push(nowLine + '</div>');
+
+      // Event markers
+      html.push('<span class="tl-label">Events</span><div class="track markers">');
+      // Oldest first, so a newer marker in the same minute draws on top.
+      for (const e of (s.events || []).slice().reverse()) {
+        if (!e.marker || !onToday(e.at)) continue;
+        const m = minuteOf(e.at);
+        if (m < start || m > end) continue;
+        const top = BOTTOM_MARKERS.has(e.marker) ? '30px' : '5px';
+        html.push('<span class="mark ' + (MARKER_CLASS[e.marker] || '') + '" style="left:' + pct(m) + ';top:' + top + '" title="' + esc(fmtTime(e.at) + ' ' + e.message) + '">' + esc(e.marker) + '</span>');
+      }
+      html.push(nowLine + '</div>');
+
+      setHTML($('timeline'), html.join(''));
+      $('now-label').innerHTML = '<span style="left:' + pct(nowMin) + '">▲ now ' + esc(fmtTime(nowIso)) + '</span>';
+    }
+
+    function renderEvents(s) {
+      const all = s.events || [];
+      const problems = all.filter(e => e.level === 'warn' || e.level === 'error');
+      const badge = $('badge-events');
+      badge.textContent = problems.length ? plural(problems.length, problems.some(e => e.level === 'error') ? 'problem' : 'warning') : '';
+      badge.className = 'badge' + (problems.length ? ' warn' : '');
+      if (activeTab !== 'events') return;
+      renderTimeline(s);
+      const list = eventFilter === 'problems' ? problems : all;
+      const tone = { info: 'idle', warn: 'warn', error: 'error' };
+      setHTML($('event-list'), list.length
+        ? list.map(e => '<div class="event"><span class="event-time">' + esc(fmtTime(e.at)) + '</span>' +
+          '<span class="event-cat"><span class="dot t-' + tone[e.level] + '"></span>' + esc(e.category) + '</span>' +
+          '<span class="event-msg">' + esc(e.message) + '</span></div>').join('')
+        : '<p class="empty">' + (eventFilter === 'problems' ? 'No warnings or errors.' : 'No events yet.') + '</p>');
+    }
+
+    function renderSetup(s) {
+      const si = s.signIn || {};
+      const rejected = s.login && s.login.rejected;
+      const rows = [
+        ['Method', METHOD_LABELS[si.method] || 'Not configured'],
+        ['Status', s.simulate ? 'Simulated' : s.tokenMissing ? 'Not set up' : rejected ? 'Rejected: ' + rejected : s.tokenExpired ? 'Expired' : 'Signed in'],
+      ];
+      if (si.tenant) rows.push(['District', si.tenant.id + (si.tenant.source === 'token' ? ' (from sign-in)' : ' (configured)')]);
+      $('signin-rows').innerHTML = kvRows(rows);
+      $('signin-help').textContent = isAddon(s)
+        ? 'The email and password are the myride_email and myride_password options on the add-on’s Configuration tab. Saving there restarts the add-on.'
+        : 'The email and password come from the MYRIDE_EMAIL and MYRIDE_PASSWORD environment variables. Change them and restart the container.';
+      $('signin-action').innerHTML = configLink(s);
+
+      // First run (or a dead token with no password to fall back on): open the token form.
+      if ((s.tokenMissing || (s.tokenExpired && !si.passwordConfigured)) && !tokenFormOpenedForSetup) {
+        tokenFormOpenedForSetup = true;
+        $('token-sections').open = true;
+      }
+      if (s.tokenMissing && !snippetShownForSetup) {
+        snippetShownForSetup = true;
+        document.querySelector('details.snippet-card').open = true;
+      }
+
+      const options = s.options || [];
+      $('options-rows').innerHTML = kvRows(options.map(o => [o.label, o.value, isAddon(s) ? o.option : o.env]));
+      $('options-help').textContent = isAddon(s)
+        ? 'You can change these on the add-on’s Configuration tab.'
+        : 'You can change these with the environment variables shown, then restart the container.';
+
+      const ha = s.homeAssistant;
+      $('ha-rows').innerHTML = ha ? kvRows([
+        ['Devices', String(ha.devices)],
+        ['Entities published', String(ha.entities)],
+        ['HA last seen online', ha.haStatus && ha.haStatus.at ? fmtTime(ha.haStatus.at) : 'Not since the bridge started'],
+      ]) : kvRows([['Status', 'Nothing published yet']]);
+      $('ha-action').innerHTML = isAddon(s)
+        ? '<a class="btn" href="' + MQTT_DEVICES_URL + '" target="_top">Open MQTT devices in Home Assistant</a>'
+        : '<p class="help">Find the devices in Home Assistant under Settings → Devices &amp; services → MQTT.</p>';
+      $('logs-where').textContent = isAddon(s) ? 'the add-on’s Log tab' : 'the container’s log';
+    }
 
     function renderVersion(v) {
       const el = $('app-version');
       if (!v) { el.textContent = ''; return; }
       const parts = [];
-      if (v.version) parts.push('v' + v.version);
-      if (v.commitShort && v.commitShort !== 'unknown') {
-        parts.push('<code>' + v.commitShort + '</code>');
-      }
+      if (v.version) parts.push('v' + esc(v.version));
+      if (v.commitShort && v.commitShort !== 'unknown') parts.push('commit <code>' + esc(v.commitShort) + '</code>');
       if (v.buildTime) {
         const d = new Date(v.buildTime);
-        if (!isNaN(d)) parts.push('built ' + d.toLocaleString());
+        if (!isNaN(d)) parts.push('built ' + esc(d.toLocaleString()));
       }
       el.innerHTML = parts.join(' · ');
+    }
+
+    function render() {
+      const s = lastStatus;
+      if (!s) return;
+      $('sim-banner').className = s.simulate ? 'visible' : '';
+      const steps = computeSteps(s);
+      renderOverview(s, steps);
+      renderToday(s);
+      renderEvents(s);
+      renderSetup(s);
     }
 
     async function fetchStatus() {
       try {
         const r = await fetch('status');
-        const s = await r.json();
-        renderVersion(s.version);
-        $('sim-banner').className = s.simulate ? 'visible' : '';
-        setPill('s-signalr', s.signalrConnected, s.signalrConnected ? 'Connected' : 'Disconnected');
-        setPill('s-mqtt', s.mqttConnected, s.mqttConnected ? 'Connected' : 'Disconnected');
-        const needsToken = s.tokenExpired || s.tokenMissing;
-        const loginRejected = Boolean(s.login && s.login.rejected);
-        setPill('s-creds', !needsToken,
-          s.tokenMissing ? 'Missing' : loginRejected ? 'Rejected' : s.tokenExpired ? 'Expired' : 'Valid');
-        $('cred-banner').textContent = s.tokenMissing
-          ? 'No MyRide sign-in configured — set your MyRide email and password, or submit a refresh token below'
-          : loginRejected
-            ? 'MyRide rejected the email and password — correct them, or submit a refresh token below'
-            : 'Credentials expired — submit a new refresh token below';
-        $('cred-banner').className = needsToken ? 'visible' : '';
-        lastTokenExpiresAt = s.tokenExpiresAt;
-        lastTokenExpired = s.tokenExpired;
-        formatTokenExpiry(s.tokenExpiresAt, s.tokenExpired);
-        $('last-refresh').textContent = 'Last updated ' + new Date().toLocaleTimeString();
-        if (needsToken) $('token-sections').open = true;
-        // First run: show how to get a token too (once, so it can be closed).
-        if (s.tokenMissing && !snippetShownForSetup) {
-          snippetShownForSetup = true;
-          document.querySelector('details.snippet-card').open = true;
-        }
-        renderBuses(s.buses || []);
+        lastStatus = await r.json();
+        renderVersion(lastStatus.version);
+        render();
+        $('last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch {
         $('last-refresh').textContent = 'Status unavailable';
       }
     }
+
+    // ── Interaction ───────────────────────────────────────────────────────
+
+    function showTab(name) {
+      activeTab = name;
+      for (const btn of document.querySelectorAll('nav[role="tablist"] button')) {
+        const on = btn.dataset.tab === name;
+        btn.setAttribute('aria-selected', String(on));
+        $('tab-' + btn.dataset.tab).hidden = !on;
+      }
+      try { sessionStorage.setItem('myride-tab', name); } catch { /* storage unavailable */ }
+      render();
+    }
+
+    document.querySelector('nav[role="tablist"]').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-tab]');
+      if (btn) showTab(btn.dataset.tab);
+    });
+
+    document.addEventListener('click', e => {
+      const go = e.target.closest('[data-goto]');
+      if (go) { showTab(go.dataset.goto); return; }
+      const step = e.target.closest('button[data-step]');
+      if (step) { selectedStep = step.dataset.step; render(); return; }
+      const chip = e.target.closest('button[data-filter]');
+      if (chip) {
+        eventFilter = chip.dataset.filter;
+        for (const c of document.querySelectorAll('button[data-filter]')) c.setAttribute('aria-pressed', String(c === chip));
+        render();
+      }
+    });
+
+    $('download-diagnostics').addEventListener('click', () => {
+      if (!lastStatus) return;
+      const blob = new Blob([JSON.stringify(lastStatus, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'myride-bridge-status-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
 
     $('token-form').addEventListener('submit', async e => {
       e.preventDefault();
@@ -715,18 +1130,14 @@
       }
     });
 
-    fetchStatus();
-    setInterval(fetchStatus, 15000);
-
-    // Load snippet once when the details element is first opened
+    // Load the snippet once, when its section is first opened
     const snippetDetails = document.querySelector('details.snippet-card');
     let snippetLoaded = false;
     snippetDetails.addEventListener('toggle', async () => {
       if (!snippetDetails.open || snippetLoaded) return;
       snippetLoaded = true;
       try {
-        const text = await fetch('snippet').then(r => r.text());
-        $('snippet-code').textContent = text;
+        $('snippet-code').textContent = await fetch('snippet').then(r => r.text());
       } catch {
         $('snippet-code').textContent = 'Could not load snippet.';
       }
@@ -739,14 +1150,9 @@
 
       function showSuccess() {
         btn.textContent = 'Copied!';
-        btn.classList.add('copied');
         msg.textContent = 'Snippet copied to clipboard.';
         msg.className = 'visible';
-        setTimeout(() => {
-          btn.textContent = 'Copy to clipboard';
-          btn.classList.remove('copied');
-          msg.className = '';
-        }, 2500);
+        setTimeout(() => { btn.textContent = 'Copy to clipboard'; msg.className = ''; }, 2500);
       }
 
       function showError() {
@@ -773,6 +1179,16 @@
         }
       }
     });
+
+    try {
+      const saved = sessionStorage.getItem('myride-tab');
+      if (saved && $('tab-' + saved)) showTab(saved);
+    } catch { /* storage unavailable */ }
+
+    fetchStatus();
+    setInterval(fetchStatus, 10000);
+    // Keep "N s ago" and the now line current between fetches.
+    setInterval(render, 5000);
   </script>
 </body>
 

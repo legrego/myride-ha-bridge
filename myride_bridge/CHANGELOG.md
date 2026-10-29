@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.0
+
+### Changed
+
+- The **School Bus** page is rebuilt around four tabs:
+  - **Overview** says whether everything works and, if not, which step is broken:
+    MyRide sign-in, students and runs, the position stream, MQTT, or Home
+    Assistant discovery. Select a step for its details and what to do.
+  - **Today** lists every run of every student, with substitutes, stop times and
+    live progress.
+  - **Events** draws today on a timeline (runs, when the position stream was
+    live or silent, frames received, reconnects and sign-ins) above a log of
+    what the bridge did, with a **Download diagnostics** button.
+  - **Setup** shows how the bridge signs in, the settings in effect and where to
+    change them. Pasting a refresh token moved here, under **Advanced**.
+- The page follows your browser's dark mode.
+
+### Added
+
+- The app checks with Home Assistant that the entities it published exist, and
+  shows the result on the page. For this it now requests access to Home
+  Assistant's API (`homeassistant_api`), which it uses only for that read-only
+  query.
+
 ## 1.4.0
 
 ### Added

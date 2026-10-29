@@ -14,6 +14,10 @@
 
 const { ApiServer } = require("./api-server");
 const { MqttBridge } = require("./mqtt-bridge");
+const { EventLog } = require("./event-log");
+const { StreamTimeline } = require("./stream-timeline");
+const { describeStudents, describeOptions } = require("./status");
+const { nowMinutesInTimeZone } = require("./student-tracker");
 const { version } = require("./version");
 
 // Home stop sits inside the fake buses' wander area so distance/approaching
@@ -216,11 +220,23 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   console.log(`[Sim] Fake students: ${FAKE_STUDENTS.map((s) => `${s.firstName} ${s.lastName}`).join(", ")}`);
   console.log(`[Sim] Tick interval: ${TICK_MS / 1000}s`);
 
+  const startedAtMs = Date.now();
+  const timeZone = process.env.TZ || "America/New_York";
+  const eventLog = new EventLog();
+  const streamTimeline = new StreamTimeline();
+  let lastTickMs = null; // last fake location tick (stream liveness)
+  eventLog.add("info", "Bridge", `Started v${version.version} in simulation mode`, { marker: "S" });
+  eventLog.add("info", "Sign-in", "Simulation: no MyRide sign-in", { marker: "T" });
+
   // Optionally connect to MQTT if broker config is present
   let mqttBridge = null;
   if (mqtt) {
     console.log("[Sim] MQTT broker configured — will publish fake locations and student sensors.");
-    mqttBridge = new MqttBridge(mqtt);
+    mqttBridge = new MqttBridge({
+      ...mqtt,
+      timeZone,
+      onEvent: (level, category, message) => eventLog.add(level, category, message),
+    });
     mqttBridge.publishCredentialStatusDiscovery();
     mqttBridge.publishCredentialStatus(false);
   } else {
@@ -231,32 +247,35 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   // Bus assetUniqueId → [students] whose current run rides that bus today.
   const busToStudents = new Map();
 
-  // Run student tracker with fake data if MQTT is available
-  let simStudentTracker = null;
-  if (mqttBridge) {
-    const { StudentTracker } = require("./student-tracker");
-    simStudentTracker = new StudentTracker({
-      api: { getStudents },
-      intervalMs: 15 * 60 * 1000,
-      timeZone: process.env.TZ || "America/New_York",
-    });
-    simStudentTracker.on("update", (snapshot) => {
-      busToStudents.clear();
-      for (const student of snapshot.students) {
-        mqttBridge.publishStudent(student);
-        const activeBus = student.currentRun && student.currentRun.activeVehicle;
-        if (activeBus) {
-          const list = busToStudents.get(activeBus) || [];
-          list.push(student);
-          busToStudents.set(activeBus, list);
-        }
+  // Student tracker with fake data: drives the status page, and the student
+  // sensors when MQTT is available.
+  const { StudentTracker } = require("./student-tracker");
+  const simStudentTracker = new StudentTracker({
+    api: { getStudents },
+    intervalMs: 15 * 60 * 1000,
+    timeZone,
+  });
+  let latestStudents = [];
+  let rosterPolledMs = null;
+  simStudentTracker.on("update", (snapshot) => {
+    latestStudents = snapshot.students;
+    rosterPolledMs = Date.now();
+    if (!mqttBridge) return;
+    busToStudents.clear();
+    for (const student of snapshot.students) {
+      mqttBridge.publishStudent(student);
+      const activeBus = student.currentRun && student.currentRun.activeVehicle;
+      if (activeBus) {
+        const list = busToStudents.get(activeBus) || [];
+        list.push(student);
+        busToStudents.set(activeBus, list);
       }
-      for (const bus of snapshot.activeBuses) {
-        mqttBridge.clearBusDiscovery(bus);
-      }
-    });
-    await simStudentTracker.start();
-  }
+    }
+    for (const bus of snapshot.activeBuses) {
+      mqttBridge.clearBusDiscovery(bus);
+    }
+  });
+  await simStudentTracker.start();
 
   const busStates = new Map();
 
@@ -266,17 +285,80 @@ async function runSimulation({ port, tokenFile, mqtt }) {
     onNewToken: async () => {
       console.log("[Sim] Token submission ignored in simulation mode.");
     },
-    getStatus: () => ({
-      bridge: "myride-ha-bridge",
-      version,
-      simulate: true,
-      tokenExpired: false,
-      tokenExpiresAt: new Date(Date.now() + 50 * 60 * 1000).toISOString(),
-      tokenExpiresInSeconds: 50 * 60,
-      signalrConnected: true,
-      mqttConnected: mqttBridge ? mqttBridge.client.connected : false,
-      buses: Array.from(busStates.values()).sort((a, b) => a.name.localeCompare(b.name)),
-    }),
+    getStatus: () => {
+      const nowMs = Date.now();
+      const snap = mqttBridge ? mqttBridge.snapshot() : null;
+      const watchedBuses = [...new Set(latestStudents.map((s) => s.currentRun && s.currentRun.activeVehicle).filter(Boolean))];
+      return {
+        bridge: "myride-ha-bridge",
+        version,
+        simulate: true,
+        tokenExpired: false,
+        tokenMissing: false,
+        login: null,
+        tokenExpiresAt: new Date(nowMs + 50 * 60 * 1000).toISOString(),
+        tokenExpiresInSeconds: 50 * 60,
+        signalrConnected: true,
+        mqttConnected: mqttBridge ? mqttBridge.client.connected : false,
+        buses: Array.from(busStates.values()).sort((a, b) => a.name.localeCompare(b.name)),
+        stream: {
+          expected: watchedBuses.length > 0,
+          live: watchedBuses.length > 0,
+          lastWatchedFrameMs: lastTickMs,
+          connectedSinceMs: startedAtMs,
+          connectionReason: "startup",
+          reconnects: 0,
+          lastReconnectReason: null,
+          lastReconnectMs: null,
+          watchedBuses,
+          lastServerError: null,
+          connectionId: "simulated",
+          framesLastHour: null,
+        },
+        runtime: "standalone",
+        configUrl: null,
+        timeZone,
+        startedAt: new Date(startedAtMs).toISOString(),
+        signIn: {
+          method: "simulated",
+          passwordConfigured: false,
+          renewedAt: new Date(startedAtMs).toISOString(),
+          nextRenewalAt: null,
+          rejectedAt: null,
+          tenant: null,
+        },
+        roster: {
+          lastPollAt: rosterPolledMs != null ? new Date(rosterPolledMs).toISOString() : null,
+          pollMinutes: 15,
+        },
+        students: describeStudents(latestStudents, {
+          nowMinutes: nowMinutesInTimeZone(new Date(nowMs), timeZone),
+          readPublished: mqttBridge ? (id, name) => mqttBridge.studentValue(id, name) : undefined,
+        }),
+        mqtt: snap && { broker: snap.broker, port: snap.port, connected: snap.connected, lastPublishAt: snap.lastPublishAt },
+        homeAssistant: snap && {
+          devices: snap.discovery.devices,
+          entities: snap.discovery.entities,
+          haStatus: snap.haStatus,
+          credentialsProblem: false,
+          entityCheck: null,
+        },
+        options: describeOptions({
+          config: {
+            timeZone,
+            busFilter: null,
+            logLevel: process.env.LOG_LEVEL || "info",
+            mqtt: { broker: mqtt ? mqtt.broker : null, port: mqtt ? mqtt.port : null },
+          },
+          configuredTenantId: null,
+          approachRadiusMeters: mqttBridge ? mqttBridge.approachRadiusMeters : 500,
+          streamSilenceSeconds: 300,
+          isAddon: false,
+        }),
+        events: eventLog.list(),
+        timeline: streamTimeline.snapshot(nowMs),
+      };
+    },
   });
 
   await apiServer.start();
@@ -285,6 +367,8 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   // Emit fake location events
   let count = 0;
   const timer = setInterval(() => {
+    lastTickMs = Date.now();
+    streamTimeline.record("live", lastTickMs);
     for (const bus of FAKE_BUSES) {
       const loc = randomWalk(bus);
       busStates.set(loc.assetUniqueId, {
@@ -294,6 +378,9 @@ async function runSimulation({ port, tokenFile, mqtt }) {
         moving: loc.speed > 0,
       });
       count++;
+      if (latestStudents.some((s) => s.currentRun && s.currentRun.activeVehicle === loc.assetUniqueId)) {
+        streamTimeline.countFrame(lastTickMs);
+      }
       if (count === 1 || count % 10 === 0) {
         console.log(
           `[Bus] ${loc.assetUniqueId} @ ${loc.latitude},${loc.longitude} ` +
@@ -317,7 +404,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
   async function shutdown(signal) {
     console.log(`\n[Sim] ${signal} received, shutting down...`);
     clearInterval(timer);
-    if (simStudentTracker) simStudentTracker.stop();
+    simStudentTracker.stop();
     await apiServer.stop();
     if (mqttBridge) await mqttBridge.disconnect();
     process.exit(0);
