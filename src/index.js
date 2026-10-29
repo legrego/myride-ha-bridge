@@ -378,6 +378,7 @@ const clearedBuses = new Set();
 // The latest student poll, for the status page.
 let latestStudents = [];
 let rosterPolledMs = null;
+let rosterError = null; // { message, atMs } of the latest failed poll, cleared by a good one
 let lastWatchedLabel = null;
 // Add-on only: how many of the bridge's entities Home Assistant has (see
 // ha-entity-check.js). { found, expected, checkedAt, error } once checked.
@@ -715,6 +716,8 @@ function getBridgeStatus() {
     roster: {
       lastPollAt: isoOrNull(rosterPolledMs),
       pollMinutes: studentTracker ? Math.round(studentTracker.intervalMs / 60000) : null,
+      // The latest poll failed (MyRide error, network); null once a poll succeeds.
+      lastError: rosterError && { message: rosterError.message, at: isoOrNull(rosterError.atMs) },
     },
     students: describeStudents(latestStudents, {
       nowMinutes: nowMinutesInTimeZone(new Date(nowMs), config.timeZone),
@@ -857,6 +860,7 @@ async function startBridge() {
     busToStudents.clear();
     latestStudents = snapshot.students;
     rosterPolledMs = Date.now();
+    rosterError = null;
     for (const student of snapshot.students) {
       mqttBridge.publishStudent(student);
       const activeBus = student.currentRun && student.currentRun.activeVehicle;
@@ -900,7 +904,10 @@ async function startBridge() {
     });
   }
   studentTracker.on("error", (err) => {
-    if (!err.tokenExpired) eventLog.add("warn", "Students", `Student poll failed: ${err.message}`);
+    if (!err.tokenExpired) {
+      eventLog.add("warn", "Students", `Student poll failed: ${err.message}`);
+      rosterError = { message: err.message, atMs: Date.now() };
+    }
     if (err.tokenExpired) handleTokenExpired().catch((e) => console.error("[Students] handleTokenExpired failed:", e.message));
   });
 

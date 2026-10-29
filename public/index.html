@@ -613,6 +613,15 @@
       return best;
     }
 
+    // A poll more than this late (beyond its interval) means the run data is stale.
+    const ROSTER_GRACE_MINUTES = 5;
+
+    function rosterOverdue(s) {
+      const roster = s.roster || {};
+      if (!roster.lastPollAt || !roster.pollMinutes) return false;
+      return Date.now() - new Date(roster.lastPollAt).getTime() > (roster.pollMinutes + ROSTER_GRACE_MINUTES) * 60000;
+    }
+
     function rosterStep(s) {
       const students = s.students || [];
       const roster = s.roster || {};
@@ -630,10 +639,27 @@
         ['Students', students.map(st => st.name).join(', ') || 'None'],
         ['Current runs', active.map(a => a.run.period + ' ' + a.run.runId + ' on ' + a.run.bus).join(' · ') || 'None right now'],
         ['Substitutes', subs.join(' · ') || 'None'],
-        ['Last poll', fmtTime(roster.lastPollAt) + (roster.pollMinutes ? ' (every ' + roster.pollMinutes + ' min)' : '')],
+        ['Last poll', fmtTime(roster.lastPollAt) + ', ' + ago(roster.lastPollAt) + (roster.pollMinutes ? ' (every ' + roster.pollMinutes + ' min)' : '')],
         ['District time', fmtTime(new Date().toISOString()) + ', ' + (s.timeZone || '')],
       ];
       step.explain = 'Each poll picks every student’s current run from today’s schedule, in the district time zone. A wrong time zone shows up here as the wrong run. The Today tab lists every run.';
+      if (roster.lastError) step.rows.push(['Last failed poll', fmtTime(roster.lastError.at) + ': ' + roster.lastError.message]);
+      if (credentialsProblem(s)) {
+        return Object.assign(step, {
+          tone: 'idle', state: 'Paused', detail: 'Resumes after sign-in · last poll ' + ago(roster.lastPollAt),
+          explain: 'Polling stopped with the sign-in. The runs shown are from the last successful poll.',
+        });
+      }
+      if (roster.lastError || rosterOverdue(s)) {
+        return Object.assign(step, {
+          tone: 'warn',
+          state: roster.lastError ? 'Poll failing' : 'Poll overdue',
+          detail: 'Last successful poll ' + ago(roster.lastPollAt),
+          explain: 'The bridge can\u2019t get students and runs from MyRide, so the runs shown may be out of date. ' +
+            (roster.lastError ? 'MyRide answered: ' + roster.lastError.message + '. ' : '') +
+            'The bridge keeps trying every ' + (roster.pollMinutes || 15) + ' minutes; the Events tab lists each failure.',
+        });
+      }
       if (students.length === 0) {
         return Object.assign(step, { tone: 'warn', state: 'No students', detail: 'MyRide returned no students for this account' });
       }
@@ -825,7 +851,9 @@
       try {
         $('today-title').textContent = 'Runs today · ' + new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', timeZone: tz() });
       } catch { $('today-title').textContent = 'Runs today'; }
-      $('today-tz').textContent = 'Times are district-local (' + (s.timeZone || '') + ')';
+      $('today-tz').textContent = (s.roster && (s.roster.lastError || rosterOverdue(s))
+        ? 'Last updated ' + ago(s.roster.lastPollAt) + ', may be out of date · '
+        : '') + 'Times are district-local (' + (s.timeZone || '') + ')';
       const rows = [];
       for (const st of students) {
         for (const r of st.runs) {
@@ -839,12 +867,14 @@
           if (tracking) {
             tone = 'ok';
             status = r.state === 'active' ? 'In progress' : 'On its way';
-            if (l.feedLive === false) { tone = 'warn'; status = 'No fixes' + (l.lastFixAt ? ' since ' + fmtTime(l.lastFixAt) : ''); }
+            if (l.feedLive === false) { tone = 'warn'; status = 'No fixes'; }
             const parts = [];
             if (l.stopsAway != null) parts.push(plural(l.stopsAway, 'stop') + ' away');
             if (l.etaMinutes != null) parts.push('ETA ' + l.etaMinutes + ' min');
             if (l.delayMinutes != null) parts.push(l.delayMinutes === 0 ? 'on time' : Math.abs(l.delayMinutes) + ' min ' + (l.delayMinutes > 0 ? 'late' : 'early'));
-            progress = parts.join(' · ') || (l.feedLive === false ? 'Waiting for fixes' : 'Waiting for a route fix');
+            progress = parts.join(' · ') || (l.feedLive === false
+              ? (l.lastFixAt ? 'Last fix ' + fmtTime(l.lastFixAt) : 'Waiting for fixes')
+              : 'Waiting for a route fix');
             snap = l.routeSnap === true ? 'On route' : l.routeSnap === false ? 'Off route' : '—';
           }
           rows.push('<div class="grid-row">' +

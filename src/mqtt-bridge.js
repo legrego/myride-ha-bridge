@@ -54,6 +54,9 @@ const ORIGIN = {
 // SignalR stops delivering fixes while MQTT stays connected (the LWT can't) — long
 // enough not to flap in a GPS dead-zone, short enough not to show a stale value.
 const PER_FIX_EXPIRE_AFTER = 600;
+// The per-fix topics discovered with expire_after: PER_FIX_EXPIRE_AFTER. studentValue()
+// applies the same expiry, so the status page stops showing them when HA does.
+const PER_FIX_TOPICS = new Set(["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away", "route_snap_ok"]);
 
 // Minimum interval between publishes of the stream-health attributes (absent a
 // state change) and of last_frame_received.
@@ -384,14 +387,19 @@ class MqttBridge {
   }
 
   /**
-   * The last payload published to one of a student's state topics, or null.
+   * The last payload published to one of a student's state topics, or null. A
+   * per-fix topic older than PER_FIX_EXPIRE_AFTER is null, as Home Assistant's
+   * expire_after makes it unavailable there.
    *
    * @param {string} uniqueId — the student's raw uniqueId
    * @param {string} name — topic leaf, e.g. "stops_away", "feed_live"
+   * @param {number} [nowMs=Date.now()]
    */
-  studentValue(uniqueId, name) {
+  studentValue(uniqueId, name, nowMs = Date.now()) {
     const entry = this.published.get(`${this.topicPrefix}/student/${this._sanitizeId(String(uniqueId))}/${name}`);
-    return entry ? entry.payload : null;
+    if (!entry) return null;
+    if (PER_FIX_TOPICS.has(name) && nowMs - entry.atMs > PER_FIX_EXPIRE_AFTER * 1000) return null;
+    return entry.payload;
   }
 
   /**
@@ -1788,4 +1796,4 @@ class MqttBridge {
   }
 }
 
-module.exports = { MqttBridge, truncateJson, STREAM_HEALTH_THROTTLE_MS };
+module.exports = { MqttBridge, truncateJson, STREAM_HEALTH_THROTTLE_MS, PER_FIX_EXPIRE_AFTER };

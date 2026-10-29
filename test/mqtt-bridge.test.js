@@ -39,7 +39,7 @@ require.cache["mqtt"] = {
   },
 };
 
-const { MqttBridge } = require("../src/mqtt-bridge");
+const { MqttBridge, PER_FIX_EXPIRE_AFTER } = require("../src/mqtt-bridge");
 
 describe("MqttBridge", () => {
   let bridge;
@@ -1652,6 +1652,21 @@ describe("MqttBridge", () => {
       bridge.publishFeedLive(student, false);
       assert.equal(bridge.studentValue("900001", "feed_live"), "OFF");
       assert.equal(bridge.studentValue("900001", "nope"), null);
+    });
+
+    it("expires per-fix values after PER_FIX_EXPIRE_AFTER, like Home Assistant", () => {
+      bridge.publishStudent(student);
+      bridge.publishFeedLive(student, false);
+      bridge._publish("myride/student/900001/eta", "2");
+      bridge._publish("myride/student/900001/route_snap_ok", "ON");
+      bridge._publish("myride/student/900001/last_fix", "2026-01-05T13:00:00.000Z");
+      const later = Date.now() + PER_FIX_EXPIRE_AFTER * 1000 + 1000;
+      assert.equal(bridge.studentValue("900001", "eta"), "2");
+      assert.equal(bridge.studentValue("900001", "eta", later), null);
+      assert.equal(bridge.studentValue("900001", "route_snap_ok", later), null);
+      // Not per-fix: kept, as in Home Assistant.
+      assert.equal(bridge.studentValue("900001", "last_fix", later), "2026-01-05T13:00:00.000Z");
+      assert.equal(bridge.studentValue("900001", "feed_live", later), "OFF");
     });
 
     it("records Home Assistant's birth message after subscribing on connect", () => {

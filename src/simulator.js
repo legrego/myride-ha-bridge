@@ -330,6 +330,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
         roster: {
           lastPollAt: rosterPolledMs != null ? new Date(rosterPolledMs).toISOString() : null,
           pollMinutes: 15,
+          lastError: null,
         },
         students: describeStudents(latestStudents, {
           nowMinutes: nowMinutesInTimeZone(new Date(nowMs), timeZone),
