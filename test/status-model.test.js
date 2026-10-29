@@ -219,10 +219,10 @@ describe("status model", () => {
 
   describe("sign-in", () => {
     it("points a rejected add-on password at the Configuration tab", () => {
-      const s = healthy({ runtime: "addon", configUrl: "/hassio/addon/a0d7b954_myride_bridge/config", tokenExpired: true, login: { rejected: "Incorrect username or password." } });
+      const s = healthy({ runtime: "addon", configUrl: "/config/app/a0d7b954_myride_bridge/config", tokenExpired: true, login: { rejected: "Incorrect username or password." } });
       const st = step(s, "signin");
       assert.equal(st.state, "Rejected");
-      assert.deepEqual(st.action, { type: "config", href: "/hassio/addon/a0d7b954_myride_bridge/config", label: "Open Configuration tab" });
+      assert.deepEqual(st.action, { type: "config", href: "/config/app/a0d7b954_myride_bridge/config", label: "Open Configuration tab" });
       assert.match(st.explain, /Configuration tab/);
     });
 
