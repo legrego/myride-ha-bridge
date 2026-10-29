@@ -5,6 +5,7 @@
  *   POST /token  — Submit a new refresh token (plain-text body).
  *                  Persists to TOKEN_FILE and hot-reloads the bridge.
  *   GET  /status — JSON health check (token validity, SignalR state, etc.)
+ *   GET  /status-model.js — the status page's step logic (public/status-model.js)
  */
 
 const http = require("http");
@@ -99,6 +100,8 @@ class ApiServer {
         this._handleGetVersion(req, res);
       } else if (req.method === "GET" && pathname === "/snippet") {
         this._handleGetSnippet(req, res);
+      } else if (req.method === "GET" && pathname === "/status-model.js") {
+        this._handleGetStatusModel(req, res);
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not found" }));
@@ -146,6 +149,12 @@ class ApiServer {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"));
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(html);
+  }
+
+  _handleGetStatusModel(_req, res) {
+    const js = fs.readFileSync(path.join(__dirname, "../public/status-model.js"));
+    res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
+    res.end(js);
   }
 
   _handleGetSnippet(_req, res) {

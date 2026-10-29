@@ -135,6 +135,16 @@ describe("Simulation mode (subprocess)", () => {
     assert.ok(data.tokenExpiresInSeconds > 0);
   });
 
+  it("GET /status carries the fake student's runs for the status page", async () => {
+    const status = JSON.parse((await get("/status")).body);
+    assert.equal(status.runtime, "standalone");
+    assert.equal(status.students.length, 1);
+    assert.deepEqual(status.students[0].runs.map((r) => r.period), ["AM", "PM"]);
+    assert.ok(status.roster.lastPollAt);
+    assert.ok(status.events.some((e) => e.marker === "S"));
+    assert.ok(Array.isArray(status.timeline.segments));
+  });
+
   it("GET /status reports mqttConnected: false when no broker is configured", async () => {
     const res = await get("/status");
     const data = JSON.parse(res.body);
@@ -168,7 +178,7 @@ describe("Simulation mode (subprocess)", () => {
 
   it("GET / includes the bridge title", async () => {
     const res = await get("/");
-    assert.ok(res.body.includes("MyRide HA Bridge"));
+    assert.ok(res.body.includes("MyRide Bus Bridge"));
   });
 
   // ── unknown routes ───────────────────────────────────────────────────────

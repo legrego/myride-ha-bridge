@@ -54,6 +54,9 @@ const ORIGIN = {
 // SignalR stops delivering fixes while MQTT stays connected (the LWT can't) — long
 // enough not to flap in a GPS dead-zone, short enough not to show a stale value.
 const PER_FIX_EXPIRE_AFTER = 600;
+// The per-fix topics discovered with expire_after: PER_FIX_EXPIRE_AFTER. studentValue()
+// applies the same expiry, so the status page stops showing them when HA does.
+const PER_FIX_TOPICS = new Set(["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away", "route_snap_ok"]);
 
 // Minimum interval between publishes of the stream-health attributes (absent a
 // state change) and of last_frame_received.
@@ -189,10 +192,25 @@ class MqttBridge {
    * @param {string} [opts.timeZone] — district IANA timezone, used to evaluate the
    *   live fix time against district-local schedule times for the delay model.
    *   Invalid/absent values fall back to the default (see nowMinutesInTimeZone).
+   * @param {function} [opts.onEvent] — (level, category, message) for the status
+   *   page's event log: MQTT connection changes, Home Assistant coming online, route
+   *   mode acquired
    */
-  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500, timeZone = DEFAULT_TIME_ZONE }) {
+  constructor({ broker, port = 1883, username, password, topicPrefix = "myride", approachRadiusMeters = 500, timeZone = DEFAULT_TIME_ZONE, onEvent = () => {} }) {
     this.topicPrefix = topicPrefix;
     this.timeZone = timeZone || DEFAULT_TIME_ZONE;
+    this.broker = broker.replace(/^mqtt:\/\//, "");
+    this.port = port;
+    this.onEvent = onEvent;
+    // topic → { payload, atMs } of the latest publish, so the status page can show
+    // what each entity was last sent (see snapshot()).
+    this.published = new Map();
+    this.lastPublishMs = null;
+    // When Home Assistant's MQTT integration last announced itself on
+    // homeassistant/status (its birth message), and what it said.
+    this.haStatus = { state: null, atMs: null };
+    // studentId → first name, so log events can name the student.
+    this.studentNames = new Map();
     // Guard against NaN/≤0 (e.g. a malformed APPROACH_RADIUS_METERS): an invalid
     // radius would make `meters <= radius` always false and silently disable the
     // "approaching" trigger. Fall back to the documented 500 m default.
@@ -274,12 +292,32 @@ class MqttBridge {
       },
     });
 
+    // Connection transitions for the event log (close repeats on every failed retry).
+    let wasConnected = false;
+
     this.client.on("connect", () => {
       console.log("[MQTT] Connected to broker");
-      this.client.publish(
+      if (!wasConnected) this.onEvent("info", "MQTT", `Connected to ${this.broker}:${port}`);
+      wasConnected = true;
+      this._publish(
         `${topicPrefix}/bridge/status`,
         "online",
         { retain: true }
+      );
+      // Home Assistant's MQTT integration posts its birth message here when it
+      // starts. Not retained by default, so it is seen only if HA (re)starts while
+      // the bridge is connected.
+      this.client.subscribe("homeassistant/status");
+    });
+
+    this.client.on("message", (topic, message) => {
+      if (topic !== "homeassistant/status") return;
+      const state = String(message);
+      this.haStatus = { state, atMs: Date.now() };
+      this.onEvent(
+        state === "online" ? "info" : "warn",
+        "Home Assistant",
+        state === "online" ? "Home Assistant's MQTT integration came online" : `Home Assistant reported ${state}`
       );
     });
 
@@ -293,6 +331,8 @@ class MqttBridge {
 
     this.client.on("close", () => {
       console.warn("[MQTT] Connection closed");
+      if (wasConnected) this.onEvent("warn", "MQTT", "Disconnected from the broker; reconnecting");
+      wasConnected = false;
     });
 
     this.client.on("error", (err) => {
@@ -302,6 +342,83 @@ class MqttBridge {
         console.error("[MQTT] Check: 1) broker hostname/IP, 2) port open, 3) firewall/network");
       }
     });
+  }
+
+  /** Publish, remembering the payload for snapshot(). */
+  _publish(topic, payload, opts) {
+    const atMs = Date.now();
+    this.published.set(topic, { payload: String(payload), atMs });
+    this.lastPublishMs = atMs;
+    return this.client.publish(topic, payload, opts);
+  }
+
+  /**
+   * What the bridge has told Home Assistant, for the status page.
+   *
+   * @returns {{ broker: string, port: number, connected: boolean,
+   *   lastPublishAt: string|null, discovery: { devices: number, entities: number },
+   *   haStatus: { state: string|null, at: string|null } }}
+   *   `discovery` counts the non-empty discovery configs published by this process
+   *   (legacy per-bus clears are empty, so they don't count).
+   */
+  snapshot() {
+    let entities = 0;
+    const devices = new Set();
+    for (const [topic, { payload }] of this.published) {
+      if (!topic.startsWith("homeassistant/") || !topic.endsWith("/config") || payload === "") continue;
+      entities++;
+      try {
+        for (const id of JSON.parse(payload).device.identifiers) devices.add(id);
+      } catch {
+        // A config without a device still counts as an entity.
+      }
+    }
+    return {
+      broker: this.broker,
+      port: this.port,
+      connected: Boolean(this.client.connected),
+      lastPublishAt: this.lastPublishMs != null ? new Date(this.lastPublishMs).toISOString() : null,
+      discovery: { devices: devices.size, entities },
+      haStatus: {
+        state: this.haStatus.state,
+        at: this.haStatus.atMs != null ? new Date(this.haStatus.atMs).toISOString() : null,
+      },
+    };
+  }
+
+  /**
+   * The last payload published to one of a student's state topics, or null. A
+   * per-fix topic older than PER_FIX_EXPIRE_AFTER is null, as Home Assistant's
+   * expire_after makes it unavailable there.
+   *
+   * @param {string} uniqueId — the student's raw uniqueId
+   * @param {string} name — topic leaf, e.g. "stops_away", "feed_live"
+   * @param {number} [nowMs=Date.now()]
+   */
+  studentValue(uniqueId, name, nowMs = Date.now()) {
+    const entry = this.published.get(`${this.topicPrefix}/student/${this._sanitizeId(String(uniqueId))}/${name}`);
+    if (!entry) return null;
+    if (PER_FIX_TOPICS.has(name) && nowMs - entry.atMs > PER_FIX_EXPIRE_AFTER * 1000) return null;
+    return entry.payload;
+  }
+
+  /**
+   * Whether the bus has served the student's stop on `runId` today: the latch
+   * _publishStopProgress sets once route mode reaches the stop and the bus leaves
+   * the approach radius. False when it hasn't, or when the latch belongs to another
+   * run or day (it resets only on the next fix of a new occurrence). Unlike the
+   * per-fix estimates, which also blank when route mode is merely unavailable, this
+   * is positive evidence the run is over for this student.
+   *
+   * @param {string} uniqueId — the student's raw uniqueId
+   * @param {*} runId — the run the page is asking about
+   * @param {number} [nowMs=Date.now()]
+   */
+  studentServed(uniqueId, runId, nowMs = Date.now()) {
+    const studentId = this._sanitizeId(String(uniqueId));
+    if (this.stopServedByStudent.get(studentId) !== true) return false;
+    const [serviceDate, occurrenceRun] = String(this.stopOccurrenceByStudent.get(studentId) || "").split("|");
+    return serviceDate === districtLocalDate(nowMs, this.timeZone) && occurrenceRun === String(runId);
   }
 
   /**
@@ -364,7 +481,7 @@ class MqttBridge {
       `homeassistant/binary_sensor/myride_${busId}_moving/config`,
     ];
     for (const topic of legacyTopics) {
-      this.client.publish(topic, "", { retain: true });
+      this._publish(topic, "", { retain: true });
     }
   }
 
@@ -395,7 +512,7 @@ class MqttBridge {
   publishCredentialStatusDiscovery() {
     const { device, availability } = this._bridgeDeviceConfig();
 
-    this.client.publish(
+    this._publish(
       "homeassistant/binary_sensor/myride_bridge_credentials/config",
       JSON.stringify({
         name: "MyRide Credentials",
@@ -425,7 +542,7 @@ class MqttBridge {
     // Position Stream — ON while a watched bus's frames (incl. MyRide's ~5 s
     // repeats) keep arriving, OFF when runs are expected but the stream is silent,
     // unknown ("None") when no student rides a bus today.
-    this.client.publish(
+    this._publish(
       "homeassistant/binary_sensor/myride_bridge_position_stream/config",
       JSON.stringify({
         name: "Position Stream",
@@ -447,7 +564,7 @@ class MqttBridge {
 
     // Last Frame Received — bridge receipt time (not MyRide's fix time) of the
     // latest NewLocation frame from any bus, before the bus filter.
-    this.client.publish(
+    this._publish(
       "homeassistant/sensor/myride_bridge_last_frame_received/config",
       JSON.stringify({
         name: "Last Frame Received",
@@ -484,12 +601,12 @@ class MqttBridge {
     const stateChanged = state !== h.state;
     if (stateChanged) {
       h.state = state;
-      this.client.publish(`${base}/position_stream`, state, { retain: true });
+      this._publish(`${base}/position_stream`, state, { retain: true });
     }
 
     if (stateChanged || h.attrsPublishedMs == null || nowMs - h.attrsPublishedMs >= STREAM_HEALTH_THROTTLE_MS) {
       h.attrsPublishedMs = nowMs;
-      this.client.publish(
+      this._publish(
         `${base}/position_stream/attributes`,
         JSON.stringify(streamHealthAttributes(status)),
         { retain: true }
@@ -503,7 +620,7 @@ class MqttBridge {
     ) {
       h.lastFrame = lastFrame;
       h.lastFramePublishedMs = nowMs;
-      this.client.publish(`${base}/last_frame_received`, lastFrame, { retain: true });
+      this._publish(`${base}/last_frame_received`, lastFrame, { retain: true });
     }
   }
 
@@ -512,7 +629,7 @@ class MqttBridge {
    * @param {boolean} expired — true if the refresh token is expired/invalid
    */
   publishCredentialStatus(expired) {
-    this.client.publish(
+    this._publish(
       `${this.topicPrefix}/bridge/credentials`,
       expired ? "ON" : "OFF",
       { retain: true }
@@ -530,6 +647,7 @@ class MqttBridge {
     if (!uniqueId) return;
 
     const studentId = this._sanitizeId(uniqueId);
+    if (firstName) this.studentNames.set(studentId, firstName);
 
     // No run today (e.g. runInfo empty on a non-school day): normalizeStudent
     // returns currentRun=null. Clear any retained stop/progress state so HA
@@ -538,8 +656,8 @@ class MqttBridge {
       if (this.discoveredStudents.has(studentId)) {
         // "None" is HA's documented sentinel for the unknown state (an empty string
         // is *ignored* on a numeric sensor, freezing its last value).
-        this.client.publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "None", { retain: true });
-        this.client.publish(`${this.topicPrefix}/student/${studentId}/scheduled_time`, "None", { retain: true });
+        this._publish(`${this.topicPrefix}/student/${studentId}/my_stop`, "None", { retain: true });
+        this._publish(`${this.topicPrefix}/student/${studentId}/scheduled_time`, "None", { retain: true });
         this._clearStopProgress(studentId); // blanks stops_away + the per-fix topics
       }
       this.lastStopKeyByStudent.delete(studentId);
@@ -588,7 +706,7 @@ class MqttBridge {
       this._evictRetainedProgress(studentId);
 
       // Device tracker (provides map position; follows today's bus)
-      this.client.publish(
+      this._publish(
         `homeassistant/device_tracker/myride_student_${studentId}/config`,
         JSON.stringify({
           name: `${displayName} Location`,
@@ -604,7 +722,7 @@ class MqttBridge {
       );
 
       // Speed sensor
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_speed/config`,
         JSON.stringify({
           name: `${displayName} Speed`,
@@ -621,7 +739,7 @@ class MqttBridge {
       );
 
       // Heading sensor
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_heading/config`,
         JSON.stringify({
           name: `${displayName} Heading`,
@@ -637,7 +755,7 @@ class MqttBridge {
       );
 
       // Moving binary sensor
-      this.client.publish(
+      this._publish(
         `homeassistant/binary_sensor/myride_student_${studentId}_moving/config`,
         JSON.stringify({
           name: `${displayName} Moving`,
@@ -653,7 +771,7 @@ class MqttBridge {
       );
 
       // Active bus sensor
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_bus/config`,
         JSON.stringify({
           name: `${displayName} Bus Today`,
@@ -668,7 +786,7 @@ class MqttBridge {
       );
 
       // Substitute binary sensor
-      this.client.publish(
+      this._publish(
         `homeassistant/binary_sensor/myride_student_${studentId}_substitute/config`,
         JSON.stringify({
           name: `${displayName} Substitute Bus`,
@@ -685,7 +803,7 @@ class MqttBridge {
       );
 
       // My Stop sensor (the student's own stop; attributes carry the schedule)
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_my_stop/config`,
         JSON.stringify({
           name: `${displayName} My Stop`,
@@ -705,7 +823,7 @@ class MqttBridge {
       // (predicted_arrival is the concrete-instant companion). has_entity_name lets
       // HA compose the friendly name from the device, so this entity carries only
       // the short suffix.
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_scheduled_time/config`,
         JSON.stringify({
           name: "Scheduled Stop Time",
@@ -722,7 +840,7 @@ class MqttBridge {
 
       // Stops remaining before my stop — GPS-truthful (count of the run's stops
       // still ahead of the live bus, from route geometry), published per fix.
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_stops_away/config`,
         JSON.stringify({
           name: "Stops Away",
@@ -742,7 +860,7 @@ class MqttBridge {
       );
 
       // Distance to my stop (meters)
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_distance_to_stop/config`,
         JSON.stringify({
           name: `${displayName} Distance to Stop`,
@@ -770,7 +888,7 @@ class MqttBridge {
       );
 
       // ETA to my stop (minutes)
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_eta/config`,
         JSON.stringify({
           name: `${displayName} ETA to Stop`,
@@ -790,7 +908,7 @@ class MqttBridge {
 
       // Schedule delay (minutes behind (+) / ahead (−) schedule). No device_class:
       // "duration" implies a non-negative span, but this value is signed.
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_delay/config`,
         JSON.stringify({
           name: "Schedule Delay",
@@ -812,7 +930,7 @@ class MqttBridge {
       // Predicted arrival at my stop — a concrete instant today (scheduled stop
       // time shifted by the current delay), so it's a `timestamp` sensor: HA renders
       // a native "in N minutes" countdown and it can anchor a Live Activity directly.
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_predicted_arrival/config`,
         JSON.stringify({
           name: "Predicted Stop Arrival",
@@ -830,7 +948,7 @@ class MqttBridge {
       );
 
       // Approaching my stop (the automation trigger)
-      this.client.publish(
+      this._publish(
         `homeassistant/binary_sensor/myride_student_${studentId}_approaching/config`,
         JSON.stringify({
           name: `${displayName} Approaching Stop`,
@@ -852,7 +970,7 @@ class MqttBridge {
       // "briefly waiting for a snap" from "route data has been dead for the whole
       // run" without reading the host logs. Non-retained + expire_after like the
       // other per-fix topics.
-      this.client.publish(
+      this._publish(
         `homeassistant/binary_sensor/myride_student_${studentId}_route_snap_ok/config`,
         JSON.stringify({
           name: "Route Snap OK",
@@ -876,7 +994,7 @@ class MqttBridge {
       // looks like a live bus frozen in place; this makes the fix age first-class in
       // HA (e.g. `now() - states('sensor…last_fix')`). Retained: it's a fact about
       // the past, worth replaying.
-      this.client.publish(
+      this._publish(
         `homeassistant/sensor/myride_student_${studentId}_last_fix/config`,
         JSON.stringify({
           name: "Last Fix",
@@ -897,7 +1015,7 @@ class MqttBridge {
       // the silence threshold (FEED_SILENCE_MS); the orchestrator's feed watchdog
       // flips it OFF when fixes stop (see publishFeedLive). A dead bridge is covered
       // by the availability topic (LWT), so this needs no expire_after.
-      this.client.publish(
+      this._publish(
         `homeassistant/binary_sensor/myride_student_${studentId}_feed_live/config`,
         JSON.stringify({
           name: "Feed Live",
@@ -920,10 +1038,10 @@ class MqttBridge {
     }
 
     // State: active bus
-    this.client.publish(stateTopic, currentRun.activeVehicle || "unknown", { retain: true });
+    this._publish(stateTopic, currentRun.activeVehicle || "unknown", { retain: true });
 
     // Attributes
-    this.client.publish(
+    this._publish(
       attributesTopic,
       JSON.stringify({
         student_name: displayName,
@@ -949,7 +1067,7 @@ class MqttBridge {
     );
 
     // Substitute flag
-    this.client.publish(
+    this._publish(
       substituteTopic,
       currentRun.isSubstitute ? "ON" : "OFF",
       { retain: true }
@@ -957,8 +1075,8 @@ class MqttBridge {
 
     // My stop: name as state, schedule + position in run as attributes.
     const myStop = currentRun.myStop || null;
-    this.client.publish(myStopTopic, (myStop && myStop.name) || "None", { retain: true });
-    this.client.publish(
+    this._publish(myStopTopic, (myStop && myStop.name) || "None", { retain: true });
+    this._publish(
       myStopAttributesTopic,
       JSON.stringify({
         stop_id: myStop ? myStop.stopId : null,
@@ -978,7 +1096,7 @@ class MqttBridge {
     // rather than in publishStudentLocation(). Retained (slow-moving, worth
     // replaying on restart). "None" → HA unknown when unavailable. stops_away is
     // NOT published here anymore — it's route-derived per fix (see _publishStopsAway).
-    this.client.publish(
+    this._publish(
       scheduledTimeTopic,
       (myStop && currentRun.scheduledTime) || "None",
       { retain: true }
@@ -1015,7 +1133,7 @@ class MqttBridge {
     const isMoving = speed > 0;
 
     // Attributes for device_tracker (latitude/longitude are magic keys HA uses for map)
-    this.client.publish(
+    this._publish(
       `${this.topicPrefix}/student/${studentId}/gps_attributes`,
       JSON.stringify({
         latitude,
@@ -1032,12 +1150,12 @@ class MqttBridge {
     );
 
     // Reset payload so HA clears location_name and uses GPS zone matching
-    this.client.publish(`${this.topicPrefix}/student/${studentId}/gps_state`, "None", { retain: true });
+    this._publish(`${this.topicPrefix}/student/${studentId}/gps_state`, "None", { retain: true });
 
     // Individual sensors
-    this.client.publish(`${this.topicPrefix}/student/${studentId}/speed`, String(speed), { retain: true });
-    this.client.publish(`${this.topicPrefix}/student/${studentId}/heading`, String(heading), { retain: true });
-    this.client.publish(
+    this._publish(`${this.topicPrefix}/student/${studentId}/speed`, String(speed), { retain: true });
+    this._publish(`${this.topicPrefix}/student/${studentId}/heading`, String(heading), { retain: true });
+    this._publish(
       `${this.topicPrefix}/student/${studentId}/moving`,
       isMoving ? "ON" : "OFF",
       { retain: true }
@@ -1054,7 +1172,7 @@ class MqttBridge {
     // Feed health: GPS time of this fix, and the feed is live.
     const fixMs = Date.parse(logTime);
     if (Number.isFinite(fixMs)) {
-      this.client.publish(
+      this._publish(
         `${this.topicPrefix}/student/${studentId}/last_fix`,
         new Date(fixMs).toISOString(),
         { retain: true }
@@ -1081,7 +1199,7 @@ class MqttBridge {
   _publishFeedLive(studentId, live) {
     if (this.feedLiveByStudent.get(studentId) === live) return;
     this.feedLiveByStudent.set(studentId, live);
-    this.client.publish(
+    this._publish(
       `${this.topicPrefix}/student/${studentId}/feed_live`,
       live ? "ON" : "OFF",
       { retain: true }
@@ -1102,11 +1220,11 @@ class MqttBridge {
   _clearStopProgress(studentId) {
     const base = `${this.topicPrefix}/student/${studentId}`;
     for (const topic of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
-      this.client.publish(`${base}/${topic}`, "None", { retain: false });
+      this._publish(`${base}/${topic}`, "None", { retain: false });
     }
-    this.client.publish(`${base}/approaching`, "OFF", { retain: true });
+    this._publish(`${base}/approaching`, "OFF", { retain: true });
     // No trusted route position while the stop is unknown/changing.
-    this.client.publish(`${base}/route_snap_ok`, "OFF", { retain: false });
+    this._publish(`${base}/route_snap_ok`, "OFF", { retain: false });
     // Drop the monotonic route-distance baseline: a new/absent stop means the
     // cumulative frame changed, so the previous bus position is no longer comparable.
     this.lastRouteCumByStudent.delete(studentId);
@@ -1134,7 +1252,7 @@ class MqttBridge {
   _evictRetainedProgress(studentId) {
     const base = `${this.topicPrefix}/student/${studentId}`;
     for (const topic of ["distance_to_stop", "eta", "delay", "predicted_arrival", "stops_away"]) {
-      this.client.publish(`${base}/${topic}`, "", { retain: true });
+      this._publish(`${base}/${topic}`, "", { retain: true });
     }
   }
 
@@ -1317,6 +1435,13 @@ class MqttBridge {
         `window=${ctx.windowStart || "?"}–${ctx.windowEnd || "?"} ` +
         `cum=${Math.round(busCum)} passes=${snap.candidates.length}` +
         `${headingUsable ? ` heading=${Math.round(headingDeg)}` : ""}${reseed ? " (reseeded)" : ""}`
+      );
+      this.onEvent(
+        "info",
+        "Route",
+        `${this.studentNames.get(studentId) || studentId}: route mode acquired · run ${ctx.runId != null ? ctx.runId : "?"} · ` +
+        `${ctx.busNumber || "?"} · ${ctx.totalStops != null ? ctx.totalStops : "?"} stops · ` +
+        `window ${ctx.windowStart || "?"}–${ctx.windowEnd || "?"}${reseed ? " (reseeded)" : ""}`
       );
     }
     return candidate;
@@ -1503,7 +1628,7 @@ class MqttBridge {
 
     // Diagnostic: is the bus being tracked on-route right now? routeMeters != null
     // means a trusted or held snap (route mode); null means we fell back to crow-flies.
-    this.client.publish(
+    this._publish(
       `${this.topicPrefix}/student/${studentId}/route_snap_ok`,
       routeMeters != null ? "ON" : "OFF",
       { retain: false }
@@ -1553,12 +1678,12 @@ class MqttBridge {
     if (served || effectiveMeters == null) {
       // Served (terminal) or bad bus coordinates with no route reading — clear rather
       // than freeze at 0 / a stale last value.
-      this.client.publish(distTopic, "None", { retain: false });
-      this.client.publish(etaTopic, "None", { retain: false });
+      this._publish(distTopic, "None", { retain: false });
+      this._publish(etaTopic, "None", { retain: false });
     } else {
       // Per-fix values are non-retained (a retained value would replay stale on an HA
       // restart) and paired with expire_after in discovery.
-      this.client.publish(distTopic, String(Math.round(effectiveMeters)), { retain: false });
+      this._publish(distTopic, String(Math.round(effectiveMeters)), { retain: false });
 
       // ETA estimate: distance / current speed. Only meaningful while moving; when
       // stopped it is genuinely undefined, so publish "None" (→ unknown) rather than
@@ -1566,13 +1691,13 @@ class MqttBridge {
       if (speedMph > 0) {
         const metersPerMin = speedMph * 26.8224; // 1 mph = 26.8224 m/min
         const etaMin = Math.round(effectiveMeters / metersPerMin);
-        this.client.publish(etaTopic, String(etaMin), { retain: false });
+        this._publish(etaTopic, String(etaMin), { retain: false });
       } else {
-        this.client.publish(etaTopic, "None", { retain: false });
+        this._publish(etaTopic, "None", { retain: false });
       }
     }
 
-    this.client.publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
+    this._publish(approachingTopic, approaching ? "ON" : "OFF", { retain: true });
   }
 
   /**
@@ -1600,9 +1725,9 @@ class MqttBridge {
     ) {
       const busCum = myStop.cumulativeAtStopMeters - routeMeters;
       const count = myStop.upstreamStopCums.filter((cum) => cum > busCum).length;
-      this.client.publish(topic, String(count), { retain: false });
+      this._publish(topic, String(count), { retain: false });
     } else {
-      this.client.publish(topic, "None", { retain: false });
+      this._publish(topic, "None", { retain: false });
     }
   }
 
@@ -1660,8 +1785,8 @@ class MqttBridge {
             `[Route] ${studentId} implausible delay ${delay} min ` +
             `(|delay| > ${DELAY_SANITY_MAX_MINUTES}) — blanking delay/predicted_arrival`
           );
-          this.client.publish(delayTopic, "None", { retain: false });
-          this.client.publish(predictedTopic, "None", { retain: false });
+          this._publish(delayTopic, "None", { retain: false });
+          this._publish(predictedTopic, "None", { retain: false });
           return;
         }
         // Predicted arrival as an ISO timestamp (device_class: timestamp): the
@@ -1669,17 +1794,17 @@ class MqttBridge {
         const predictedTs = districtLocalTimestamp(
           nowMs, myStop.stopTimeMinutes + delay, this.timeZone
         );
-        this.client.publish(delayTopic, String(delay), { retain: false });
-        this.client.publish(predictedTopic, predictedTs || "None", { retain: false });
+        this._publish(delayTopic, String(delay), { retain: false });
+        this._publish(predictedTopic, predictedTs || "None", { retain: false });
         return;
       }
     }
-    this.client.publish(delayTopic, "None", { retain: false });
-    this.client.publish(predictedTopic, "None", { retain: false });
+    this._publish(delayTopic, "None", { retain: false });
+    this._publish(predictedTopic, "None", { retain: false });
   }
 
   async disconnect() {
-    this.client.publish(
+    this._publish(
       `${this.topicPrefix}/bridge/status`,
       "offline",
       { retain: true }
@@ -1690,4 +1815,4 @@ class MqttBridge {
   }
 }
 
-module.exports = { MqttBridge, truncateJson, STREAM_HEALTH_THROTTLE_MS };
+module.exports = { MqttBridge, truncateJson, STREAM_HEALTH_THROTTLE_MS, PER_FIX_EXPIRE_AFTER };

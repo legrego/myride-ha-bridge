@@ -3,12 +3,16 @@ const assert = require("node:assert/strict");
 
 // Mock mqtt module before requiring MqttBridge
 const publishCalls = [];
+const subscribeCalls = [];
 const onHandlers = {};
 let endCallback;
 
 const fakeMqttClient = {
   publish(...args) {
     publishCalls.push(args);
+  },
+  subscribe(topic) {
+    subscribeCalls.push(topic);
   },
   on(event, handler) {
     onHandlers[event] = handler;
@@ -35,7 +39,9 @@ require.cache["mqtt"] = {
   },
 };
 
-const { MqttBridge } = require("../src/mqtt-bridge");
+const { MqttBridge, PER_FIX_EXPIRE_AFTER } = require("../src/mqtt-bridge");
+const { describeStudents } = require("../src/status");
+const StatusModel = require("../public/status-model");
 
 describe("MqttBridge", () => {
   let bridge;
@@ -1607,6 +1613,133 @@ describe("MqttBridge", () => {
     it("publishFeedLive is a no-op before discovery", () => {
       bridge.publishFeedLive(student, false);
       assert.equal(topicCalls("myride/student/900001/feed_live").length, 0);
+    });
+  });
+
+  describe("status page snapshot", () => {
+    // Fabricated student and bus.
+    const student = {
+      uniqueId: "900001",
+      firstName: "Test",
+      lastName: "Student",
+      currentRun: { runId: 1, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false },
+      todaysRuns: [],
+    };
+
+    it("counts the discovery configs and devices it published, not legacy clears", () => {
+      bridge.publishCredentialStatusDiscovery();
+      bridge.publishStreamHealthDiscovery();
+      bridge.clearBusDiscovery("BUS 900");
+      const before = bridge.snapshot().discovery;
+      assert.deepEqual(before, { devices: 1, entities: 3 });
+      bridge.publishStudent(student);
+      const after = bridge.snapshot().discovery;
+      assert.equal(after.devices, 2);
+      assert.ok(after.entities > 3);
+    });
+
+    it("reports the broker, connection state and last publish time", () => {
+      fakeMqttClient.connected = true;
+      bridge.publishCredentialStatus(false);
+      const snap = bridge.snapshot();
+      assert.equal(snap.broker, "localhost");
+      assert.equal(snap.port, 1883);
+      assert.equal(snap.connected, true);
+      assert.ok(Date.parse(snap.lastPublishAt) > 0);
+      delete fakeMqttClient.connected;
+    });
+
+    it("returns the last payload published to a student's topic", () => {
+      bridge.publishStudent(student);
+      bridge.publishFeedLive(student, false);
+      assert.equal(bridge.studentValue("900001", "feed_live"), "OFF");
+      assert.equal(bridge.studentValue("900001", "nope"), null);
+    });
+
+    it("expires per-fix values after PER_FIX_EXPIRE_AFTER, like Home Assistant", () => {
+      bridge.publishStudent(student);
+      bridge.publishFeedLive(student, false);
+      bridge._publish("myride/student/900001/eta", "2");
+      bridge._publish("myride/student/900001/route_snap_ok", "ON");
+      bridge._publish("myride/student/900001/last_fix", "2026-01-05T13:00:00.000Z");
+      const later = Date.now() + PER_FIX_EXPIRE_AFTER * 1000 + 1000;
+      assert.equal(bridge.studentValue("900001", "eta"), "2");
+      assert.equal(bridge.studentValue("900001", "eta", later), null);
+      assert.equal(bridge.studentValue("900001", "route_snap_ok", later), null);
+      // Not per-fix: kept, as in Home Assistant.
+      assert.equal(bridge.studentValue("900001", "last_fix", later), "2026-01-05T13:00:00.000Z");
+      assert.equal(bridge.studentValue("900001", "feed_live", later), "OFF");
+    });
+
+    it("records Home Assistant's birth message after subscribing on connect", () => {
+      const events = [];
+      bridge.onEvent = (...e) => events.push(e);
+      subscribeCalls.length = 0;
+      onHandlers.connect();
+      assert.deepEqual(subscribeCalls, ["homeassistant/status"]);
+      onHandlers.message("homeassistant/status", Buffer.from("online"));
+      const { haStatus } = bridge.snapshot();
+      assert.equal(haStatus.state, "online");
+      assert.ok(Date.parse(haStatus.at) > 0);
+      assert.ok(events.some(([level, category]) => level === "info" && category === "Home Assistant"));
+      // Other topics are ignored.
+      onHandlers.message("myride/other", Buffer.from("x"));
+      assert.equal(bridge.snapshot().haStatus.state, "online");
+    });
+
+    it("keeps a late run unfinished while the bus stops and moves without route mode", () => {
+      // PM window 15:00–15:30, now 15:31; no route geometry, so only crow-flies
+      // distance (and ETA while moving) are published. Regression for #34 review.
+      const lateStudent = {
+        uniqueId: "900002",
+        firstName: "Test",
+        currentRun: {
+          runId: 31, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false,
+          myStop: { stopId: 77, name: "TEST ST", lat: 41.5, lng: -72.0, stopTimeMinutes: 915 },
+        },
+        todaysRuns: [{ runId: 31, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false, windowStart: 900, windowEnd: 930 }],
+      };
+      bridge.publishStudent(lateStudent);
+      const rowAt = (speed) => {
+        bridge.publishStudentLocation(lateStudent, {
+          assetUniqueId: "BUS 900", latitude: 41.51, longitude: -72.0, heading: 180, speed, logTime: new Date().toISOString(),
+        });
+        const students = describeStudents([lateStudent], {
+          nowMinutes: 931,
+          readPublished: (id, name) => bridge.studentValue(id, name),
+          readServed: (id, runId) => bridge.studentServed(id, runId),
+        });
+        return StatusModel.todayRows({ students, timeZone: "America/New_York" })[0];
+      };
+      const moving = rowAt(15);
+      assert.equal(moving.status, "Running late");
+      assert.match(moving.progress, /^1\.1 km away · ETA \d+ min$/);
+      const stopped = rowAt(0);
+      assert.equal(stopped.status, "Running late");
+      assert.equal(stopped.progress, "1.1 km away");
+      assert.equal(rowAt(15).status, "Running late");
+    });
+
+    it("reports a served stop only for the run and day it was served on", () => {
+      bridge.publishStudent(student);
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      bridge.stopServedByStudent.set("900001", true);
+      bridge.stopOccurrenceByStudent.set("900001", `${today}|1|77`);
+      assert.equal(bridge.studentServed("900001", 1), true);
+      assert.equal(bridge.studentServed("900001", 2), false);
+      bridge.stopOccurrenceByStudent.set("900001", "2020-01-01|1|77");
+      assert.equal(bridge.studentServed("900001", 1), false);
+      bridge.stopServedByStudent.delete("900001");
+      assert.equal(bridge.studentServed("900001", 1), false);
+    });
+
+    it("reports a connection drop once, not on every failed retry", () => {
+      const events = [];
+      bridge.onEvent = (...e) => events.push(e);
+      onHandlers.connect();
+      onHandlers.close();
+      onHandlers.close();
+      assert.deepEqual(events.map(([level, category]) => `${level} ${category}`), ["info MQTT", "warn MQTT"]);
     });
   });
 });

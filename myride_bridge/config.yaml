@@ -1,6 +1,6 @@
 # https://contributors.home-assistant.io/apps/reference/configuration/
 name: MyRide Bus Bridge
-version: "1.4.0"
+version: "1.5.0"
 slug: myride_bridge
 description: Real-time MyRide K-12 school bus tracking via MQTT
 url: https://github.com/legrego/myride-ha-bridge/tree/main/myride_bridge
@@ -13,6 +13,9 @@ boot: auto
 services:
   - mqtt:need
 ingress: true
+# Read-only use: the status page asks Core (through the Supervisor) how many of the
+# bridge's MQTT entities exist. See src/ha-entity-check.js.
+homeassistant_api: true
 panel_icon: mdi:bus-school
 panel_title: School Bus
 watchdog: http://[HOST]:[PORT:8099]/status

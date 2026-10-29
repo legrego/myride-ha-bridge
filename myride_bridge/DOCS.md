@@ -28,25 +28,26 @@ On the **Info** tab, turn on **Show in sidebar** and **Watchdog**, then select
 sign-in expires.
 
 If MyRide rejects the email and password, the bridge tries them only once (so it
-can't lock your account), and **School Bus** shows **Credentials: Rejected**.
+can't lock your account), and the **School Bus** page says MyRide rejected them.
 Correct them on the **Configuration** tab and restart the app.
 
 #### Using a refresh token instead of your password
 
 Do this on a computer with Chrome, Edge or Firefox. A phone won't work.
 
-1. Open **School Bus** in the sidebar. It asks for a refresh token and shows a
-   snippet under **How do I get a refresh token?**. Select **Copy to clipboard**.
+1. Open **School Bus** in the sidebar and go to the **Setup** tab. With no email and
+   password set, it opens **Advanced: use a refresh token instead** and the snippet
+   under **How do I get a refresh token?**. Select **Copy to clipboard**.
 2. In a new tab, sign in at [myridek12.tylerapp.com](https://myridek12.tylerapp.com).
 3. Press **F12** (on a Mac, **⌥⌘J** in Chrome or Edge, **⌥⌘K** in Firefox) and select
    the **Console** tab.
 4. Paste the snippet and press **Enter**. If the browser says pasting isn't allowed,
    type `allow pasting`, press **Enter**, and paste again.
 5. The snippet prints your refresh token and copies it to your clipboard. Go back to
-   **School Bus**, paste it into the box and select **Submit Token**.
+   **School Bus**, paste it into the box and select **Save token**.
 
-Within a few seconds **MyRide K-12**, **MQTT** and **Credentials** show green, and
-each student appears as a device under **Settings → Devices & services → MQTT**. The
+Within a few seconds the **Overview** tab says **Working**, and each student appears
+as a device under **Settings → Devices & services → MQTT**. The
 bus only reports its position during runs, so outside school hours the map pin stays
 where the bus last parked.
 
@@ -60,8 +61,9 @@ password set, the bridge signs in again on its own.
 
 With a pasted token and no password, the bridge keeps running when it expires and
 `binary_sensor.myride_bridge_credentials` turns on. To fix it, copy a new token as
-in step 3; the snippet is under **Token Management → How do I get a refresh
-token?**. The bridge starts streaming again within seconds, with no restart.
+in step 3; the snippet is on the **School Bus** page's **Setup** tab, under
+**Advanced: use a refresh token instead**. The bridge starts streaming again within
+seconds, with no restart.
 
 ## Options
 
@@ -101,17 +103,33 @@ list and automation examples are in the
 
 ## Status page
 
-Select **Open Web UI**, or use **School Bus** in the sidebar. The page shows the
-connection state and tracked buses, and has the form for submitting a refresh token. It's served through Home Assistant's ingress, so it's behind your Home
+Select **Open Web UI**, or use **School Bus** in the sidebar. It has four tabs:
+
+- **Overview**: whether the bridge works and, if not, which step is broken (MyRide
+  sign-in, students and runs, position stream, MQTT broker, HA discovery). Select a
+  step for its details and what to do about it.
+- **Today**: every run of every student, with substitutes, stop times and live
+  progress.
+- **Events**: today on a timeline (runs, when the position stream was live or
+  silent, frames received, reconnects and sign-ins), and a log of what the bridge
+  did. **Download diagnostics** saves the page's data as a file to attach to a bug
+  report. It holds your students' first names and today's runs, but no password or
+  token.
+- **Setup**: how the bridge signs in, the settings in effect, and the form for
+  pasting a refresh token.
+
+The page is served through Home Assistant's ingress, so it's behind your Home
 Assistant login and isn't exposed on your network. With **Watchdog** on, the
 Supervisor restarts the bridge if the page stops responding.
 
 ## Security
 
-The app asks for no extra privileges and has no open ports. It runs with its own
-AppArmor profile. In this release that profile is in *complain* mode: it logs what it
-would block without blocking anything, so it can be checked against a full school day
-and then enforced in a later release.
+The app has no open ports. Its one extra permission is access to Home Assistant's API
+(`homeassistant_api`). It uses that only for a read-only query that counts its own
+entities for the status page. It runs with its own AppArmor profile. In this release
+that profile is in *complain* mode: it logs what it would block without blocking
+anything, so it can be checked against a full school day and then enforced in a
+later release.
 
 ## Help and license
 

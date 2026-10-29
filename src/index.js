@@ -65,6 +65,10 @@ const { FixOrderGuard } = require("./fix-order-guard");
 const { FeedMonitor, inRunWindow } = require("./feed-monitor");
 const { StreamSupervisor, STREAM_SILENCE_MS } = require("./stream-supervisor");
 const { nowMinutesInTimeZone, formatMinutes } = require("./student-tracker");
+const { EventLog } = require("./event-log");
+const { StreamTimeline } = require("./stream-timeline");
+const { countBridgeEntities } = require("./ha-entity-check");
+const { describeStudents, addonConfigUrl, maskId, describeOptions } = require("./status");
 const { version } = require("./version");
 
 // ─── Configuration ───────────────────────────────────────────────
@@ -172,8 +176,8 @@ if (tokenMissing) {
   console.error("  2. Open DevTools (F12) → Console tab");
   console.error("  3. Paste the contents of capture-tokens.js and press Enter");
   if (isAddon) {
-    console.error("  4. Open the app's Web UI and paste the refresh token under");
-    console.error("     Token Management (or set the refresh_token option)");
+    console.error("  4. Open the app's Web UI and paste the refresh token on its Setup");
+    console.error("     tab (or set the refresh_token option)");
   } else {
     console.error(`  4. Paste the refresh token on the status page`);
     console.error(`     (port ${config.api.port}), or set it in your .env file and restart`);
@@ -189,6 +193,15 @@ let currentAccessToken = config.myride.accessToken || null;
 let tokenExpiresAt = 0;
 let refreshTokenExpired = false;
 const busStates = new Map(); // assetUniqueId → { name, lastSeen, speed, moving }
+
+// For the status page: what happened (event log), the stream's recent history, and
+// how the bridge last got its token.
+const startedAtMs = Date.now();
+const eventLog = new EventLog();
+const streamTimeline = new StreamTimeline();
+const signIn = { method: null, renewedAtMs: null, rejectedAtMs: null };
+const STREAM_TIMELINE_SAMPLE_MS = 30_000;
+let streamTimelineInterval = null;
 
 // If we only have a raw access token, decode its expiry
 if (currentAccessToken && !config.myride.refreshToken && !passwordLogin.configured) {
@@ -278,10 +291,12 @@ async function renewAccessToken() {
       console.log(
         `[Auth] Token refreshed, expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
       );
+      noteSignIn(signIn.method === "password" ? "password" : "refresh-token", "Access token renewed with the refresh token");
       return;
     } catch (err) {
       if (!err.tokenExpired || !passwordLogin.available) throw err;
       console.warn(`[Auth] Refresh token no longer works (${err.message}).`);
+      eventLog.add("warn", "Sign-in", "The refresh token no longer works; signing in with the email and password");
     }
   }
 
@@ -293,6 +308,15 @@ async function renewAccessToken() {
   console.log(
     `[Auth] Signed in, token expires at ${new Date(tokenExpiresAt * 1000).toLocaleTimeString()}`
   );
+  noteSignIn("password", "Signed in with the email and password");
+}
+
+/** Record a successful sign-in or token renewal for the status page. */
+function noteSignIn(method, message) {
+  signIn.method = method;
+  signIn.renewedAtMs = Date.now();
+  signIn.rejectedAtMs = null;
+  eventLog.add("info", "Sign-in", message, { marker: "T" });
 }
 
 // ─── Tenant ID ───────────────────────────────────────────────────
@@ -351,6 +375,16 @@ let framesLastHour = null; // counts of the last completed hour
 let streamFrameLogInterval = null;
 // Buses whose legacy per-bus HA entities have already been cleared (migration).
 const clearedBuses = new Set();
+// The latest student poll, for the status page.
+let latestStudents = [];
+let rosterPolledMs = null;
+let rosterError = null; // { message, atMs } of the latest failed poll, cleared by a good one
+let lastWatchedLabel = null;
+// Add-on only: how many of the bridge's entities Home Assistant has (see
+// ha-entity-check.js). { found, expected, checkedAt, error } once checked.
+let entityCheck = null;
+const ENTITY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+let entityCheckInterval = null;
 
 // Dynamic bus filter driven by student assignments.
 // null = allow all; Set = allow only those IDs.
@@ -360,6 +394,16 @@ let allowedBuses = config.busFilter ? new Set([config.busFilter]) : null;
 async function handleTokenExpired() {
   if (refreshTokenExpired) return; // already handled
   refreshTokenExpired = true;
+  signIn.rejectedAtMs = Date.now();
+  eventLog.add(
+    "error",
+    "Sign-in",
+    passwordLogin.rejection
+      ? `MyRide rejected the email and password (${passwordLogin.rejection}). Not trying them again until they change`
+      : "The MyRide refresh token is no longer valid. Tracking stopped",
+    { marker: "!" }
+  );
+  streamTimeline.record("stopped", Date.now());
 
   console.error("╔═══════════════════════════════════════════════════════════╗");
   console.error("║  MYRIDE CREDENTIALS NO LONGER WORK — action required     ║");
@@ -433,6 +477,7 @@ async function handleNewToken(newRefreshToken) {
   passwordLogin.reset();
 
   console.log("[Auth] New token validated and active.");
+  noteSignIn("refresh-token", "New refresh token accepted from the status page");
 
   // Tell HA credentials are OK again
   if (mqttBridge) {
@@ -458,6 +503,8 @@ async function handleNewToken(newRefreshToken) {
   if (!bridgeStartup) runBridge();
 }
 
+const REFRESH_INTERVAL_MS = 50 * 60 * 1000;
+
 /** Periodic token refresh (every 50 minutes); no-op if already running. */
 function startRefreshInterval() {
   if (refreshInterval || !config.myride.refreshToken) return;
@@ -471,7 +518,7 @@ function startRefreshInterval() {
         console.error("[Auth] Periodic refresh failed:", err.message);
       }
     }
-  }, 50 * 60 * 1000);
+  }, REFRESH_INTERVAL_MS);
 }
 
 function logDropSummary({ busId, count, newestLogTime, lastAcceptedMs }) {
@@ -483,6 +530,14 @@ function logDropSummary({ busId, count, newestLogTime, lastAcceptedMs }) {
 }
 
 const BACKOFF_RECONNECT_REASONS = new Set(["watchdog", "server-error"]);
+// How each reconnect reason reads in the status page's event log and timeline.
+const RECONNECT_EVENTS = {
+  "runs-changed": { label: "watched buses changed", marker: "R1" },
+  watchdog: { label: "no frames from watched buses", marker: "R2" },
+  "server-error": { label: "MyRide server error", marker: "R3" },
+  closed: { label: "connection closed", marker: "C" },
+  token: { label: "new token", marker: null },
+};
 
 /**
  * The single path for rebuilding the SignalR connection. No-op while the refresh
@@ -502,6 +557,13 @@ function reconnectSignalR(reason, summary = "") {
 
 async function runReconnect(reason, summary) {
   const line = `[Stream] reconnect reason=${reason}${summary ? `: ${summary}` : ""}`;
+  const reconnectEvent = RECONNECT_EVENTS[reason] || { label: reason, marker: null };
+  eventLog.add(
+    BACKOFF_RECONNECT_REASONS.has(reason) || reason === "closed" ? "warn" : "info",
+    "Stream",
+    `Reconnecting (${reconnectEvent.label})${summary ? `: ${summary}` : ""}`,
+    { marker: reconnectEvent.marker }
+  );
   if (BACKOFF_RECONNECT_REASONS.has(reason)) {
     console.warn(line);
     streamSupervisor.onReconnectStarted(reason, Date.now());
@@ -555,11 +617,29 @@ async function connectSignalR(reason) {
 function onStreamConnected(reason) {
   const nowMs = Date.now();
   streamSupervisor.onConnected(nowMs, reason);
+  const watched = watchedLabel(streamSupervisor.status(nowMs).watchedBuses);
   console.log(
     `[Stream] connected reason=${reason} connectionId=${signalrClient.connectionId || "?"} ` +
-    `watched=${watchedLabel(streamSupervisor.status(nowMs).watchedBuses)}`
+    `watched=${watched}`
   );
+  eventLog.add("info", "Stream", `Connected (${reason}) · watching ${watched}`);
+  streamTimeline.record(streamTimelineState(nowMs), nowMs);
   publishStreamHealth(nowMs);
+}
+
+/**
+ * The stream's state for the status page's timeline. "live" needs an actual
+ * watched-bus frame within the silence window: the supervisor's own `live` also
+ * counts the grace after a connect, which a stream with no frames would pass.
+ */
+function streamTimelineState(nowMs) {
+  if (refreshTokenExpired || !signalrClient || signalrClient.state !== "Connected") return "stopped";
+  const { expected, lastWatchedFrameMs, connectedSinceMs } = streamSupervisor.status(nowMs);
+  if (!expected) return "idle";
+  const silenceMs = streamSupervisor.silenceMs;
+  if (lastWatchedFrameMs != null && nowMs - lastWatchedFrameMs <= silenceMs) return "live";
+  if (connectedSinceMs != null && nowMs - connectedSinceMs <= silenceMs) return "waiting";
+  return "silent";
 }
 
 // Log context for a runs-changed decision: the set change from a roster poll, or a
@@ -578,6 +658,7 @@ function watchedLabel(buses) {
 function streamStatus(nowMs) {
   return {
     ...streamSupervisor.status(nowMs),
+    silenceMs: streamSupervisor.silenceMs,
     connectionId: signalrClient ? signalrClient.connectionId : null,
     framesLastHour,
   };
@@ -605,7 +686,9 @@ function describeWatchdog(detail, nowMs) {
 }
 
 function getBridgeStatus() {
-  const now = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const now = Math.floor(nowMs / 1000);
+  const mqtt = mqttBridge ? mqttBridge.snapshot() : null;
   return {
     bridge: "myride-ha-bridge",
     version,
@@ -620,8 +703,62 @@ function getBridgeStatus() {
     signalrConnected: signalrClient ? signalrClient.state === "Connected" : false,
     mqttConnected: mqttBridge ? mqttBridge.client.connected : false,
     buses: Array.from(busStates.values()).sort((a, b) => a.name.localeCompare(b.name)),
-    stream: streamStatus(Date.now()),
+    stream: streamStatus(nowMs),
+
+    // ── For the status page (see public/index.html) ──
+    runtime: isAddon ? "addon" : "standalone",
+    configUrl: isAddon ? addonConfigUrl(process.env.HOSTNAME) : null,
+    timeZone: config.timeZone,
+    startedAt: new Date(startedAtMs).toISOString(),
+    signIn: {
+      method: signIn.method || (passwordLogin.configured ? "password" : config.myride.refreshToken ? "refresh-token" : currentAccessToken ? "access-token" : null),
+      passwordConfigured: passwordLogin.configured,
+      renewedAt: isoOrNull(signIn.renewedAtMs),
+      // The 50-minute renewal timer, or the access token's expiry without one.
+      nextRenewalAt: refreshInterval && signIn.renewedAtMs ? isoOrNull(signIn.renewedAtMs + REFRESH_INTERVAL_MS) : null,
+      rejectedAt: isoOrNull(signIn.rejectedAtMs),
+      tenant: config.myride.tenantId
+        ? { id: maskId(config.myride.tenantId), source: configuredTenantId ? "configured" : "token" }
+        : null,
+    },
+    roster: {
+      lastPollAt: isoOrNull(rosterPolledMs),
+      pollMinutes: studentTracker ? Math.round(studentTracker.intervalMs / 60000) : null,
+      // The latest poll failed (MyRide error, network); null once a poll succeeds.
+      lastError: rosterError && { message: rosterError.message, at: isoOrNull(rosterError.atMs) },
+    },
+    students: describeStudents(latestStudents, {
+      nowMinutes: nowMinutesInTimeZone(new Date(nowMs), config.timeZone),
+      readPublished: mqttBridge ? (id, name) => mqttBridge.studentValue(id, name) : undefined,
+      readServed: mqttBridge ? (id, runId) => mqttBridge.studentServed(id, runId) : null,
+    }),
+    mqtt: mqtt && {
+      broker: mqtt.broker,
+      port: mqtt.port,
+      connected: mqtt.connected,
+      lastPublishAt: mqtt.lastPublishAt,
+    },
+    homeAssistant: mqtt && {
+      devices: mqtt.discovery.devices,
+      entities: mqtt.discovery.entities,
+      haStatus: mqtt.haStatus,
+      credentialsProblem: refreshTokenExpired,
+      entityCheck: isAddon ? entityCheck : null,
+    },
+    options: describeOptions({
+      config,
+      configuredTenantId,
+      approachRadiusMeters: mqttBridge ? mqttBridge.approachRadiusMeters : config.mqtt.approachRadiusMeters || 500,
+      streamSilenceSeconds: Math.round(streamSupervisor.silenceMs / 1000),
+      isAddon,
+    }),
+    events: eventLog.list(),
+    timeline: streamTimeline.snapshot(nowMs),
   };
+}
+
+function isoOrNull(ms) {
+  return ms != null ? new Date(ms).toISOString() : null;
 }
 
 // ─── Main ────────────────────────────────────────────────────────
@@ -637,6 +774,21 @@ async function main() {
   // still load — otherwise the one tool for supplying a token is unavailable
   // exactly when it's needed (and the reverse proxy returns 502).
   await apiServer.start();
+  eventLog.add(
+    "info",
+    "Bridge",
+    `Started v${version.version}${isAddon ? " as a Home Assistant add-on" : ""}`,
+    { marker: "S", atMs: startedAtMs }
+  );
+  if (currentAccessToken && !config.myride.refreshToken && !passwordLogin.configured) {
+    signIn.method = "access-token";
+  }
+  // Sample the stream state for the status page's timeline, whether or not the
+  // data side is running (waiting for a token or idle on bad credentials is "stopped").
+  streamTimelineInterval = setInterval(() => {
+    const nowMs = Date.now();
+    streamTimeline.record(streamTimelineState(nowMs), nowMs);
+  }, STREAM_TIMELINE_SAMPLE_MS);
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -695,6 +847,7 @@ async function startBridge() {
     topicPrefix: config.mqtt.topicPrefix,
     approachRadiusMeters: config.mqtt.approachRadiusMeters,
     timeZone: config.timeZone,
+    onEvent: (level, category, message) => eventLog.add(level, category, message),
   });
 
   // Publish credential status sensor (problem = OFF means credentials are OK)
@@ -714,6 +867,9 @@ async function startBridge() {
     // Publish student discovery/state and rebuild the bus → students index
     // so incoming SignalR locations can be routed to the right student(s).
     busToStudents.clear();
+    latestStudents = snapshot.students;
+    rosterPolledMs = Date.now();
+    rosterError = null;
     for (const student of snapshot.students) {
       mqttBridge.publishStudent(student);
       const activeBus = student.currentRun && student.currentRun.activeVehicle;
@@ -728,6 +884,15 @@ async function startBridge() {
     // day, a substitute) means reconnecting. Every update, not only on `change`, so
     // the BUS_FILTER override is covered too.
     const watched = [...busToStudents.keys()].filter((bus) => !config.busFilter || bus === config.busFilter);
+    const label = watchedLabel([...watched].sort());
+    if (label !== lastWatchedLabel) {
+      eventLog.add(
+        "info",
+        "Students",
+        `${snapshot.students.length} student${snapshot.students.length === 1 ? "" : "s"} · watching ${label}`
+      );
+      lastWatchedLabel = label;
+    }
     const decision = streamSupervisor.setWatchedBuses(watched, Date.now());
     if (decision) reconnectSignalR(decision.reason, describeRunsChanged(decision.detail));
     // One-time migration: remove legacy per-bus entities from HA
@@ -748,6 +913,10 @@ async function startBridge() {
     });
   }
   studentTracker.on("error", (err) => {
+    if (!err.tokenExpired) {
+      eventLog.add("warn", "Students", `Student poll failed: ${err.message}`);
+      rosterError = { message: err.message, atMs: Date.now() };
+    }
     if (err.tokenExpired) handleTokenExpired().catch((e) => console.error("[Students] handleTokenExpired failed:", e.message));
   });
 
@@ -774,7 +943,10 @@ async function startBridge() {
     const nowMs = Date.now();
     lastFrameAnyMs = nowMs;
     framesThisHour.total++;
-    if (streamSupervisor.onFrame(data.assetUniqueId, nowMs)) framesThisHour.watched++;
+    if (streamSupervisor.onFrame(data.assetUniqueId, nowMs)) {
+      framesThisHour.watched++;
+      streamTimeline.countFrame(nowMs);
+    }
   });
 
   signalrClient.on("serverError", ({ method, args }) => {
@@ -783,6 +955,7 @@ async function startBridge() {
       `[Stream] server called ${method}(${truncateJson(args)}) ` +
       `watched=${watchedLabel(streamSupervisor.status(nowMs).watchedBuses)}`
     );
+    eventLog.add("warn", "Stream", `MyRide sent ${method}(${truncateJson(args, 200)})`);
     const decision = streamSupervisor.onServerError(method, args, nowMs);
     if (decision) {
       reconnectSignalR(
@@ -818,6 +991,7 @@ async function startBridge() {
         `[Feed] ${data.assetUniqueId} fixes resumed after ${Math.round(feed.gapMs / 1000)}s ` +
         `(fix lag ${feed.lagMs != null ? `${Math.round(feed.lagMs / 1000)}s` : "?"}, logTime ${data.logTime})`
       );
+      eventLog.add("info", "Feed", `${data.assetUniqueId} fixes resumed after ${Math.round(feed.gapMs / 1000)} s`);
     }
     locationCount++;
     if (config.logLevel === "debug") {
@@ -886,6 +1060,12 @@ async function startBridge() {
           `window ${formatMinutes(run.windowStart)}–${formatMinutes(run.windowEnd)}; ` +
           `last fix logTime ${s.lastLogTime || "none"}`
         );
+        eventLog.add(
+          "warn",
+          "Feed",
+          `No fix from ${busId} for ${Math.round(s.silentMs / 1000)} s during run ${run.runId} ` +
+          `(${formatMinutes(run.windowStart)}–${formatMinutes(run.windowEnd)})`
+        );
       }
     }
     for (const summary of feedMonitor.flushDrops(nowMs)) logDropSummary(summary);
@@ -917,6 +1097,12 @@ async function startBridge() {
   // Step 5: Periodic token refresh (every 50 minutes)
   startRefreshInterval();
 
+  // As an add-on, check now and then that Home Assistant created the entities.
+  if (isAddon) {
+    setTimeout(checkEntities, 60_000).unref();
+    entityCheckInterval = setInterval(checkEntities, ENTITY_CHECK_INTERVAL_MS);
+  }
+
   console.log();
   console.log("[Bridge] Running. Press Ctrl+C to stop.");
   console.log(
@@ -939,6 +1125,26 @@ async function startBridge() {
   }
 }
 
+/** Ask Home Assistant how many of the published entities it has (add-on only). */
+async function checkEntities() {
+  if (!mqttBridge || !mqttBridge.client.connected) return;
+  const expected = mqttBridge.snapshot().discovery.entities;
+  const previous = entityCheck;
+  try {
+    const found = await countBridgeEntities();
+    entityCheck = { found, expected, checkedAt: new Date().toISOString(), error: null };
+    if (found < expected && (!previous || previous.found !== found)) {
+      eventLog.add("warn", "Home Assistant", `Home Assistant has ${found} of the ${expected} entities the bridge published`);
+    }
+  } catch (err) {
+    entityCheck = { found: null, expected, checkedAt: new Date().toISOString(), error: err.message };
+    if (!previous || previous.error !== err.message) {
+      console.warn(`[HA] Entity check failed: ${err.message}`);
+      eventLog.add("warn", "Home Assistant", `Couldn't check entities in Home Assistant: ${err.message}`);
+    }
+  }
+}
+
 // Graceful shutdown. Registered before the bridge starts, so any part may be
 // missing (still waiting for a token, or startup idled on an expired one).
 async function shutdown(signal) {
@@ -946,6 +1152,8 @@ async function shutdown(signal) {
   if (refreshInterval) clearInterval(refreshInterval);
   if (feedWatchdogInterval) clearInterval(feedWatchdogInterval);
   if (streamFrameLogInterval) clearInterval(streamFrameLogInterval);
+  if (entityCheckInterval) clearInterval(entityCheckInterval);
+  if (streamTimelineInterval) clearInterval(streamTimelineInterval);
   if (studentTracker) studentTracker.stop();
   if (signalrClient) await signalrClient.stop();
   await apiServer.stop();

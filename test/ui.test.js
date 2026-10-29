@@ -55,14 +55,10 @@ describe("UI (GET /)", () => {
 
   // ── Page structure ────────────────────────────────────────────────────────
 
-  it("contains the page title", async () => {
+  it("contains the page title and heading", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes("<title>MyRide HA Bridge</title>"));
-  });
-
-  it("contains the header heading", async () => {
-    const { body } = await getRoot();
-    assert.ok(body.includes("<h1>MyRide HA Bridge</h1>"));
+    assert.ok(body.includes("<title>MyRide Bus Bridge</title>"));
+    assert.ok(body.includes("<h1>MyRide Bus Bridge</h1>"));
   });
 
   it("contains the simulation mode banner element", async () => {
@@ -70,47 +66,39 @@ describe("UI (GET /)", () => {
     assert.ok(body.includes('id="sim-banner"'));
   });
 
-  // ── Status card ───────────────────────────────────────────────────────────
-
-  it("contains the SignalR status pill", async () => {
+  it("has the four tabs and their panels", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes('id="s-signalr"'));
+    for (const tab of ["overview", "today", "events", "setup"]) {
+      assert.ok(body.includes(`data-tab="${tab}"`), `tab button ${tab}`);
+      assert.ok(body.includes(`id="tab-${tab}"`), `tab panel ${tab}`);
+    }
   });
 
-  it("contains the MQTT status pill", async () => {
+  it("has the overview's verdict, steps and step details", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes('id="s-mqtt"'));
+    for (const id of ["verdict", "steps", "step-detail", "overall-chip", "last-refresh"]) {
+      assert.ok(body.includes(`id="${id}"`), id);
+    }
   });
 
-  it("contains the credentials status pill", async () => {
+  it("has the events tab's timeline, log and diagnostics download", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes('id="s-creds"'));
+    for (const id of ["timeline", "event-list", "download-diagnostics"]) {
+      assert.ok(body.includes(`id="${id}"`), id);
+    }
   });
 
-  it("contains the token-expiry field", async () => {
+  it("supports dark mode", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes('id="s-expires"'));
+    assert.ok(body.includes("prefers-color-scheme: dark"));
   });
 
-  it("contains the last-refresh note element", async () => {
-    const { body } = await getRoot();
-    assert.ok(body.includes('id="last-refresh"'));
-  });
-
-  // ── Token form ────────────────────────────────────────────────────────────
+  // ── Token form (Setup tab) ────────────────────────────────────────────────
 
   it("contains the token submission form", async () => {
     const { body } = await getRoot();
     assert.ok(body.includes('id="token-form"'));
-  });
-
-  it("contains the token textarea", async () => {
-    const { body } = await getRoot();
     assert.ok(body.includes('id="token-input"'));
-  });
-
-  it("contains the token feedback message element", async () => {
-    const { body } = await getRoot();
     assert.ok(body.includes('id="token-msg"'));
   });
 
@@ -122,31 +110,41 @@ describe("UI (GET /)", () => {
     assert.ok(body.includes("setInterval(fetchStatus"), "fetchStatus should be polled");
   });
 
-  it("reads simulate flag from status and toggles banner class", async () => {
+  it("reads the simulate flag and the credential state from status", async () => {
     const { body } = await getRoot();
-    // The JS sets banner className based on s.simulate
     assert.ok(body.includes("s.simulate"));
-    assert.ok(body.includes("'visible'"));
-  });
-
-  it("reads signalrConnected and mqttConnected from status", async () => {
-    const { body } = await getRoot();
-    assert.ok(body.includes("s.signalrConnected"));
-    assert.ok(body.includes("s.mqttConnected"));
-  });
-
-  it("reads tokenExpired from status to set credentials pill", async () => {
-    const { body } = await getRoot();
     assert.ok(body.includes("s.tokenExpired"));
+    assert.ok(body.includes("s.tokenMissing"));
+    assert.ok(body.includes("s.login && s.login.rejected"));
   });
 
-  it("POSTs token to /token endpoint on form submit", async () => {
+  it("says where settings change, by runtime", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes("fetch('token'"));
+    // The Setup tab's own wording; the steps' wording is tested in status-model.test.js.
+    assert.ok(body.includes("isAddon(s)"));
+    assert.ok(body.includes("Configuration tab"));
+    assert.ok(body.includes("MYRIDE_EMAIL and MYRIDE_PASSWORD environment variables"));
   });
 
-  it("fetches /status endpoint from JS", async () => {
+  it("keeps fetches relative, for Home Assistant ingress", async () => {
     const { body } = await getRoot();
     assert.ok(body.includes("fetch('status')"));
+    assert.ok(body.includes("fetch('token'"));
+    assert.ok(body.includes("fetch('snippet')"));
+    assert.ok(!/fetch\('\//.test(body), "no absolute fetch paths");
+  });
+
+  it("loads the step logic from status-model.js, relatively", async () => {
+    const { body } = await getRoot();
+    assert.ok(body.includes('<script src="status-model.js"></script>'));
+    const res = await fetch(`http://127.0.0.1:${port}/status-model.js`);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get("content-type").includes("javascript"));
+    assert.ok((await res.text()).includes("root.StatusModel = api"));
+  });
+
+  it("escapes values from the bridge before inserting them as HTML", async () => {
+    const { body } = await getRoot();
+    assert.ok(body.includes("function esc("));
   });
 });
