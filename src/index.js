@@ -730,6 +730,7 @@ function getBridgeStatus() {
     students: describeStudents(latestStudents, {
       nowMinutes: nowMinutesInTimeZone(new Date(nowMs), config.timeZone),
       readPublished: mqttBridge ? (id, name) => mqttBridge.studentValue(id, name) : undefined,
+      readServed: mqttBridge ? (id, runId) => mqttBridge.studentServed(id, runId) : null,
     }),
     mqtt: mqtt && {
       broker: mqtt.broker,

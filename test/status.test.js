@@ -52,8 +52,18 @@ describe("describeStudents()", () => {
     });
     assert.deepEqual(s.live, {
       feedLive: true, lastFixAt: "2026-01-05T12:37:00.000Z", routeSnap: false,
-      stopsAway: 3, etaMinutes: null, delayMinutes: -2, distanceMeters: 812,
+      stopsAway: 3, etaMinutes: null, delayMinutes: -2, distanceMeters: 812, stopServed: null,
     });
+  });
+
+  it("asks whether the current run's stop was served", () => {
+    const asked = [];
+    const [s] = describeStudents([student], {
+      nowMinutes: 16 * 60,
+      readServed: (id, runId) => { asked.push([id, runId]); return true; },
+    });
+    assert.equal(s.live.stopServed, true);
+    assert.deepEqual(asked, [["900001", 11]]);
   });
 
   it("has all-null live values without an MQTT bridge", () => {

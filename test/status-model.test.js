@@ -76,12 +76,36 @@ describe("status model", () => {
       assert.match(step(late(), "roster").detail, /PM run in progress/);
     });
 
-    it("is Done once its progress is gone (stop served, or values expired)", () => {
+    const noEstimates = { lastFixAt: iso(ago(5)), routeSnap: null, stopsAway: null, etaMinutes: null, delayMinutes: null, distanceMeters: null };
+    const rowOf = (s) => M.todayRows(s).find((r) => r.run.runId === 12);
+
+    it("stays Running late on distance alone (no route mode, bus stopped)", () => {
       const s = late();
-      s.students[0].live = { feedLive: true, lastFixAt: iso(ago(5)), routeSnap: null, stopsAway: null, etaMinutes: null, delayMinutes: null };
-      const row = M.todayRows(s).find((r) => r.run.runId === 12);
-      assert.equal(row.status, "Done");
-      assert.equal(row.progress, "—");
+      s.students[0].live = { ...noEstimates, feedLive: true, routeSnap: false, distanceMeters: 1112 };
+      const row = rowOf(s);
+      assert.equal(row.status, "Running late");
+      assert.equal(row.progress, "1.1 km away");
+      assert.equal(row.snap, "Off route");
+    });
+
+    it("is Done once the bridge saw the bus serve the stop", () => {
+      const s = late();
+      s.students[0].live = { ...noEstimates, feedLive: true, stopServed: true };
+      assert.equal(rowOf(s).status, "Done");
+    });
+
+    it("says Window over, not Done, while the bus reports but nothing confirms arrival", () => {
+      const s = late();
+      s.students[0].live = { ...noEstimates, feedLive: true, stopServed: false };
+      const row = rowOf(s);
+      assert.equal(row.status, "Window over");
+      assert.equal(row.progress, "Bus still reporting · arrival not confirmed");
+    });
+
+    it("is Done once the window is over and the bus stopped reporting", () => {
+      const s = late();
+      s.students[0].live = { ...noEstimates, feedLive: false, stopServed: false, lastFixAt: iso(ago(1800)) };
+      assert.equal(rowOf(s).status, "Done");
     });
   });
 

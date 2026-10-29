@@ -17,8 +17,10 @@ const { formatMinutes } = require("./student-tracker");
  * @param {number|null} opts.nowMinutes — district-local minutes since midnight
  * @param {function} [opts.readPublished] — (uniqueId, topicLeaf) → last published payload
  *   or null (MqttBridge#studentValue); omitted when there's no MQTT bridge
+ * @param {function} [opts.readServed] — (uniqueId, runId) → whether the bus has served
+ *   the student's stop on that run today (MqttBridge#studentServed)
  */
-function describeStudents(students, { nowMinutes, readPublished = () => null }) {
+function describeStudents(students, { nowMinutes, readPublished = () => null, readServed = null }) {
   return (students || []).map((student) => {
     const current = student.currentRun;
     const runs = (student.todaysRuns || []).map((run) => ({
@@ -48,6 +50,8 @@ function describeStudents(students, { nowMinutes, readPublished = () => null }) 
         etaMinutes: number(value("eta")),
         delayMinutes: number(value("delay")),
         distanceMeters: number(value("distance_to_stop")),
+        // null when unknown (no MQTT bridge or no current run)
+        stopServed: readServed && current ? Boolean(readServed(student.uniqueId, current.runId)) : null,
       },
     };
   });

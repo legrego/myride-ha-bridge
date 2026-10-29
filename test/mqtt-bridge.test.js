@@ -40,6 +40,8 @@ require.cache["mqtt"] = {
 };
 
 const { MqttBridge, PER_FIX_EXPIRE_AFTER } = require("../src/mqtt-bridge");
+const { describeStudents } = require("../src/status");
+const StatusModel = require("../public/status-model");
 
 describe("MqttBridge", () => {
   let bridge;
@@ -1683,6 +1685,52 @@ describe("MqttBridge", () => {
       // Other topics are ignored.
       onHandlers.message("myride/other", Buffer.from("x"));
       assert.equal(bridge.snapshot().haStatus.state, "online");
+    });
+
+    it("keeps a late run unfinished while the bus stops and moves without route mode", () => {
+      // PM window 15:00–15:30, now 15:31; no route geometry, so only crow-flies
+      // distance (and ETA while moving) are published. Regression for #34 review.
+      const lateStudent = {
+        uniqueId: "900002",
+        firstName: "Test",
+        currentRun: {
+          runId: 31, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false,
+          myStop: { stopId: 77, name: "TEST ST", lat: 41.5, lng: -72.0, stopTimeMinutes: 915 },
+        },
+        todaysRuns: [{ runId: 31, busNumber: "BUS 900", activeVehicle: "BUS 900", isSubstitute: false, windowStart: 900, windowEnd: 930 }],
+      };
+      bridge.publishStudent(lateStudent);
+      const rowAt = (speed) => {
+        bridge.publishStudentLocation(lateStudent, {
+          assetUniqueId: "BUS 900", latitude: 41.51, longitude: -72.0, heading: 180, speed, logTime: new Date().toISOString(),
+        });
+        const students = describeStudents([lateStudent], {
+          nowMinutes: 931,
+          readPublished: (id, name) => bridge.studentValue(id, name),
+          readServed: (id, runId) => bridge.studentServed(id, runId),
+        });
+        return StatusModel.todayRows({ students, timeZone: "America/New_York" })[0];
+      };
+      const moving = rowAt(15);
+      assert.equal(moving.status, "Running late");
+      assert.match(moving.progress, /^1\.1 km away · ETA \d+ min$/);
+      const stopped = rowAt(0);
+      assert.equal(stopped.status, "Running late");
+      assert.equal(stopped.progress, "1.1 km away");
+      assert.equal(rowAt(15).status, "Running late");
+    });
+
+    it("reports a served stop only for the run and day it was served on", () => {
+      bridge.publishStudent(student);
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      bridge.stopServedByStudent.set("900001", true);
+      bridge.stopOccurrenceByStudent.set("900001", `${today}|1|77`);
+      assert.equal(bridge.studentServed("900001", 1), true);
+      assert.equal(bridge.studentServed("900001", 2), false);
+      bridge.stopOccurrenceByStudent.set("900001", "2020-01-01|1|77");
+      assert.equal(bridge.studentServed("900001", 1), false);
+      bridge.stopServedByStudent.delete("900001");
+      assert.equal(bridge.studentServed("900001", 1), false);
     });
 
     it("reports a connection drop once, not on every failed retry", () => {

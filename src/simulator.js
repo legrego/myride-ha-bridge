@@ -336,6 +336,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
         students: describeStudents(latestStudents, {
           nowMinutes: nowMinutesInTimeZone(new Date(nowMs), timeZone),
           readPublished: mqttBridge ? (id, name) => mqttBridge.studentValue(id, name) : undefined,
+          readServed: mqttBridge ? (id, runId) => mqttBridge.studentServed(id, runId) : null,
         }),
         mqtt: snap && { broker: snap.broker, port: snap.port, connected: snap.connected, lastPublishAt: snap.lastPublishAt },
         homeAssistant: snap && {

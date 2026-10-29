@@ -107,35 +107,50 @@
 
   // ── Students and runs ─────────────────────────────────────────────────
 
-  // Route-derived progress is published only while the bus is on its way to the
-  // stop (blank once served) and expires 10 minutes after the last fix, so any
-  // value here means the bus is still driving to the stop.
+  // Progress toward the stop is published only until the stop is served (blank
+  // after) and expires 10 minutes after the last fix, so any value here means the
+  // bus is still heading there. Distance counts too: it falls back to crow-flies
+  // when route mode is off, so it stays when stops away and delay can't be worked
+  // out, and when ETA blanks because the bus is stopped.
   function hasProgress(live) {
-    return Boolean(live) && (live.stopsAway != null || live.etaMinutes != null || live.delayMinutes != null);
+    return Boolean(live) &&
+      (live.stopsAway != null || live.etaMinutes != null || live.delayMinutes != null || live.distanceMeters != null);
   }
 
   /**
    * What a run is doing now: "active" (inside its window), "late" (window over,
-   * bus still heading to the stop), "on-its-way" (before its window, bus already
-   * reporting), "done", "upcoming", or "unknown".
+   * bus still heading to the stop), "window-over" (window over and the bus still
+   * reporting, but nothing says whether it reached the stop), "on-its-way" (before
+   * its window, bus already reporting), "done", "upcoming", or "unknown". A run is
+   * only "done" once the bridge saw the bus serve the stop, or the window is over
+   * and the bus has stopped reporting: estimates alone going blank is not evidence.
    */
   function runPhase(student, run) {
     const live = student.live || {};
-    if (run.current && run.state === "done" && hasProgress(live)) return "late";
+    if (run.current && run.state === "done" && live.stopServed !== true) {
+      if (hasProgress(live)) return "late";
+      if (live.feedLive === true) return "window-over";
+    }
     if (run.current && run.state === "upcoming" && live.feedLive === true) return "on-its-way";
     return run.state;
   }
 
+  const RUNNING_PHASES = ["active", "late", "window-over"];
+
   function inProgress(student, run) {
-    return run.current && ["active", "late", "on-its-way"].includes(runPhase(student, run));
+    return run.current && [...RUNNING_PHASES, "on-its-way"].includes(runPhase(student, run));
   }
 
   function activeRuns(s) {
     const out = [];
     for (const st of s.students || []) {
-      for (const r of st.runs) if (r.current && ["active", "late"].includes(runPhase(st, r))) out.push({ student: st, run: r });
+      for (const r of st.runs) if (r.current && RUNNING_PHASES.includes(runPhase(st, r))) out.push({ student: st, run: r });
     }
     return out;
+  }
+
+  function fmtDistance(meters) {
+    return meters < 1000 ? Math.round(meters) + " m" : (meters / 1000).toFixed(1) + " km";
   }
 
   function nextRun(s) {
@@ -170,16 +185,17 @@
         if (phase === "done") status = "Done";
         if (phase === "active") { tone = "ok"; status = "In progress"; }
         if (r.current && inProgress(st, r)) {
-          tone = phase === "late" ? "warn" : "ok";
-          status = phase === "late" ? "Running late" : phase === "on-its-way" ? "On its way" : "In progress";
+          tone = phase === "late" ? "warn" : phase === "window-over" ? "idle" : "ok";
+          status = { late: "Running late", "window-over": "Window over", "on-its-way": "On its way" }[phase] || "In progress";
           if (l.feedLive === false) { tone = "warn"; status = "No fixes"; }
           const parts = [];
           if (l.stopsAway != null) parts.push(plural(l.stopsAway, "stop") + " away");
+          if (l.stopsAway == null && l.distanceMeters != null) parts.push(fmtDistance(l.distanceMeters) + " away");
           if (l.etaMinutes != null) parts.push("ETA " + l.etaMinutes + " min");
           if (l.delayMinutes != null) parts.push(l.delayMinutes === 0 ? "on time" : Math.abs(l.delayMinutes) + " min " + (l.delayMinutes > 0 ? "late" : "early"));
           progress = parts.join(" · ") || (l.feedLive === false
             ? (l.lastFixAt ? "Last fix " + fmtTime(l.lastFixAt, s.timeZone) : "Waiting for fixes")
-            : "Waiting for a route fix");
+            : phase === "window-over" ? "Bus still reporting · arrival not confirmed" : "Waiting for a route fix");
           snap = l.routeSnap === true ? "On route" : l.routeSnap === false ? "Off route" : "—";
         }
         rows.push({ student: st.name, run: r, tone, status, progress, snap });

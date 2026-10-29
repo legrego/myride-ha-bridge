@@ -403,6 +403,25 @@ class MqttBridge {
   }
 
   /**
+   * Whether the bus has served the student's stop on `runId` today: the latch
+   * _publishStopProgress sets once route mode reaches the stop and the bus leaves
+   * the approach radius. False when it hasn't, or when the latch belongs to another
+   * run or day (it resets only on the next fix of a new occurrence). Unlike the
+   * per-fix estimates, which also blank when route mode is merely unavailable, this
+   * is positive evidence the run is over for this student.
+   *
+   * @param {string} uniqueId — the student's raw uniqueId
+   * @param {*} runId — the run the page is asking about
+   * @param {number} [nowMs=Date.now()]
+   */
+  studentServed(uniqueId, runId, nowMs = Date.now()) {
+    const studentId = this._sanitizeId(String(uniqueId));
+    if (this.stopServedByStudent.get(studentId) !== true) return false;
+    const [serviceDate, occurrenceRun] = String(this.stopOccurrenceByStudent.get(studentId) || "").split("|");
+    return serviceDate === districtLocalDate(nowMs, this.timeZone) && occurrenceRun === String(runId);
+  }
+
+  /**
    * Pre-flight TCP check so we get a clear diagnostic before mqtt.connect times out.
    */
   _checkConnectivity(host, port) {
