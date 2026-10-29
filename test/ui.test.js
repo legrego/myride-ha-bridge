@@ -120,7 +120,8 @@ describe("UI (GET /)", () => {
 
   it("says where settings change, by runtime", async () => {
     const { body } = await getRoot();
-    assert.ok(body.includes("s.runtime === 'addon'"));
+    // The Setup tab's own wording; the steps' wording is tested in status-model.test.js.
+    assert.ok(body.includes("isAddon(s)"));
     assert.ok(body.includes("Configuration tab"));
     assert.ok(body.includes("MYRIDE_EMAIL and MYRIDE_PASSWORD environment variables"));
   });
@@ -131,6 +132,15 @@ describe("UI (GET /)", () => {
     assert.ok(body.includes("fetch('token'"));
     assert.ok(body.includes("fetch('snippet')"));
     assert.ok(!/fetch\('\//.test(body), "no absolute fetch paths");
+  });
+
+  it("loads the step logic from status-model.js, relatively", async () => {
+    const { body } = await getRoot();
+    assert.ok(body.includes('<script src="status-model.js"></script>'));
+    const res = await fetch(`http://127.0.0.1:${port}/status-model.js`);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get("content-type").includes("javascript"));
+    assert.ok((await res.text()).includes("root.StatusModel = api"));
   });
 
   it("escapes values from the bridge before inserting them as HTML", async () => {

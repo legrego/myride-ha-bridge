@@ -305,6 +305,7 @@ async function runSimulation({ port, tokenFile, mqtt }) {
           expected: watchedBuses.length > 0,
           live: watchedBuses.length > 0,
           lastWatchedFrameMs: lastTickMs,
+          silenceMs: 300_000,
           connectedSinceMs: startedAtMs,
           connectionReason: "startup",
           reconnects: 0,

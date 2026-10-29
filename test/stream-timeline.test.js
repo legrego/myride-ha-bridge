@@ -38,6 +38,13 @@ describe("StreamTimeline", () => {
       assert.equal(segments[1].start, iso(later));
     });
 
+    it("records a waiting segment between a connect and the first frame", () => {
+      const tl = new StreamTimeline();
+      tl.record("waiting", sec(0));
+      tl.record("live", sec(30));
+      assert.deepEqual(tl.snapshot(sec(30)).segments.map((s) => s.state), ["waiting", "live"]);
+    });
+
     it("ignores unknown states", () => {
       const tl = new StreamTimeline();
       tl.record("bogus", sec(0));

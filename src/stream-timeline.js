@@ -16,7 +16,7 @@ const RETAIN_MS = 24 * 60 * 60 * 1000;
 // side stopped sampling) ends the segment instead of stretching it over the gap.
 const MAX_SAMPLE_GAP_MS = 5 * 60 * 1000;
 
-const STATES = new Set(["live", "silent", "idle", "stopped"]);
+const STATES = new Set(["live", "waiting", "silent", "idle", "stopped"]);
 
 class StreamTimeline {
   /**
@@ -32,9 +32,10 @@ class StreamTimeline {
   /**
    * Record the stream state at `nowMs`.
    *
-   * @param {"live"|"silent"|"idle"|"stopped"} state — live: watched buses sending;
-   *   silent: buses expected but quiet; idle: connected with nothing to watch;
-   *   stopped: no connection (credentials, startup, or between reconnects)
+   * @param {"live"|"waiting"|"silent"|"idle"|"stopped"} state — live: a watched-bus
+   *   frame within the silence window; waiting: just connected, no frame yet; silent:
+   *   buses expected but quiet; idle: connected with nothing to watch; stopped: no
+   *   connection (credentials, startup, or between reconnects)
    * @param {number} nowMs
    */
   record(state, nowMs) {

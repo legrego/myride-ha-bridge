@@ -627,12 +627,19 @@ function onStreamConnected(reason) {
   publishStreamHealth(nowMs);
 }
 
-/** The stream's state for the status page's timeline. */
+/**
+ * The stream's state for the status page's timeline. "live" needs an actual
+ * watched-bus frame within the silence window: the supervisor's own `live` also
+ * counts the grace after a connect, which a stream with no frames would pass.
+ */
 function streamTimelineState(nowMs) {
   if (refreshTokenExpired || !signalrClient || signalrClient.state !== "Connected") return "stopped";
-  const { expected, live } = streamSupervisor.status(nowMs);
+  const { expected, lastWatchedFrameMs, connectedSinceMs } = streamSupervisor.status(nowMs);
   if (!expected) return "idle";
-  return live ? "live" : "silent";
+  const silenceMs = streamSupervisor.silenceMs;
+  if (lastWatchedFrameMs != null && nowMs - lastWatchedFrameMs <= silenceMs) return "live";
+  if (connectedSinceMs != null && nowMs - connectedSinceMs <= silenceMs) return "waiting";
+  return "silent";
 }
 
 // Log context for a runs-changed decision: the set change from a roster poll, or a
@@ -651,6 +658,7 @@ function watchedLabel(buses) {
 function streamStatus(nowMs) {
   return {
     ...streamSupervisor.status(nowMs),
+    silenceMs: streamSupervisor.silenceMs,
     connectionId: signalrClient ? signalrClient.connectionId : null,
     framesLastHour,
   };
