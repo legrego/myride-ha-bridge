@@ -85,13 +85,15 @@ function number(payload) {
  * The add-on's Configuration tab URL, from the container hostname. The Supervisor
  * names an add-on container after its slug with `_` → `-` (`a0d7b954-myride-bridge`
  * for `a0d7b954_myride_bridge`); our slug has no `-`, so the mapping reverses.
+ * Home Assistant 2026.2 renamed add-ons to apps and moved their pages from
+ * `/hassio/addon/<slug>` to `/config/app/<slug>`; the old path now 404s.
  *
  * @param {string|undefined} hostname
  * @returns {string|null} a path on the Home Assistant origin, or null
  */
 function addonConfigUrl(hostname) {
   if (!hostname || !/^[a-z0-9-]+-myride-bridge$/.test(hostname)) return null;
-  return `/hassio/addon/${hostname.replace(/-/g, "_")}/config`;
+  return `/config/app/${hostname.replace(/-/g, "_")}/config`;
 }
 
 /** "3f2a1b…91c0" — enough to recognise a tenant ID without printing all of it. */

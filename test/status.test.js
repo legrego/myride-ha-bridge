@@ -80,8 +80,8 @@ describe("describeStudents()", () => {
 
 describe("addonConfigUrl()", () => {
   it("maps the add-on container hostname back to its slug", () => {
-    assert.equal(addonConfigUrl("a0d7b954-myride-bridge"), "/hassio/addon/a0d7b954_myride_bridge/config");
-    assert.equal(addonConfigUrl("local-myride-bridge"), "/hassio/addon/local_myride_bridge/config");
+    assert.equal(addonConfigUrl("a0d7b954-myride-bridge"), "/config/app/a0d7b954_myride_bridge/config");
+    assert.equal(addonConfigUrl("local-myride-bridge"), "/config/app/local_myride_bridge/config");
   });
 
   it("returns null for anything else", () => {
