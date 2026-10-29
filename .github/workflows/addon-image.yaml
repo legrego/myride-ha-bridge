@@ -4,7 +4,9 @@ name: Build Home Assistant add-on image
 # runner per architecture, io.hass.* labels, Cosign signing, and a multi-arch
 # manifest at the `image` named in myride_bridge/config.yaml. Pull requests
 # build without pushing. A version that is already published is never
-# overwritten (skip-existing): bump `version` to release.
+# overwritten (skip-existing): bump `version` to release. Once the manifest
+# is published, the release job tags the commit `v<version>` and creates the
+# GitHub release, with that version's CHANGELOG.md section as its notes.
 
 on:
   push:
@@ -118,3 +120,34 @@ jobs:
             latest
           registry-prefix: ${{ needs.prepare.outputs.registry_prefix }}
           skip-existing: ${{ needs.prepare.outputs.version }}
+
+  release:
+    name: Create GitHub release
+    needs: [prepare, manifest]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Create the tag and release
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: v${{ needs.prepare.outputs.version }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Create release
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+            exit 0
+          fi
+          awk -v heading="## $VERSION" '$0 == heading { found = 1; next } found && /^## / { exit } found' \
+            "${APP_DIR}/CHANGELOG.md" > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::${APP_DIR}/CHANGELOG.md has no entry for $VERSION"
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --notes-file notes.md --generate-notes

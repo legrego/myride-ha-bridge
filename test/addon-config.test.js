@@ -235,4 +235,11 @@ describe("add-on manifest", () => {
     assert.ok(match, "config.yaml has a version");
     assert.equal(match[1], require("../package.json").version);
   });
+
+  it("has a CHANGELOG entry for config.yaml's version", () => {
+    // The release job uses this section as the GitHub release notes.
+    const version = read(appDir, "config.yaml").match(/^version:\s*"?([^"\n]+)"?\s*$/m)[1];
+    const headings = read(appDir, "CHANGELOG.md").match(/^## .*$/gm);
+    assert.ok(headings.includes(`## ${version}`), `CHANGELOG.md has "## ${version}"`);
+  });
 });
